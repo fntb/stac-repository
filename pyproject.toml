@@ -1,0 +1,36 @@
+[project]
+name = "stac-repository"
+version = "0.0.1"
+description = "A (git-)versionned STAC catalog and catalog management system"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE.txt" }
+authors = [{ name = "Pierre Fontbonne", email = "pierre.fontbonne@uca.fr" }]
+keywords = ["pystac", "stac", "database", "git", "repository"]
+dependencies = ["pystac ~= 1.11.0"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest ~= 8.3.0",
+    "shapely ~= 2.0.0",
+    "numpy ~= 2.2.0",
+    "matplotlib ~= 3.10.0",
+    "pyproj ~= 3.7.0",
+    "pillow ~= 11.1.0",
+]
+
+cli = ["pydantic ~= 2.10.3", "typer ~= 0.15.1"]
+
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["stac_repository"]
+
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "WARNING"
+log_cli_format = "(%(filename)s:%(lineno)s) %(asctime)s [%(levelname)s] %(message)s"
+log_cli_date_format = "%H:%M:%S"

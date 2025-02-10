@@ -1,0 +1,11 @@
+{
+  "editor.formatOnSave": true,
+  "python.defaultInterpreterPath": "./.venv/bin/python",
+  "autoDocstring.docstringFormat": "google-notypes",
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.autopep8"
+  },
+  "[markdown]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
+}
