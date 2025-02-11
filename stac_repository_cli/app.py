@@ -74,7 +74,7 @@ def callback():
 
 @app.command()
 def version():
-    """Show the stac-repository version number.
+    """Show stac-repository version number.
     """
     print(__version__)
 
@@ -87,6 +87,8 @@ def ingest(
     git: bool = True,
 ):
     """Discover and ingest products from a source using an installed processor.
+
+    This command combines `discover` and `ingest-products`.
     """
     stac_repository = load_repository(config, mock=not git)
 
@@ -130,7 +132,7 @@ def ingest_products(
     config: str = "stac_repository.toml",
     git: bool = True,
 ):
-    """Discover products from a source using an installed processor.
+    """Ingest products from a product sources using an installed processor.
     """
     stac_repository = load_repository(config, mock=not git)
 
@@ -151,7 +153,7 @@ def prune(
     config: str = "stac_repository.toml",
     git: bool = True,
 ):
-    """Delete products from the catalog.
+    """Remove products from the catalog.
     """
     stac_repository = load_repository(config, mock=not git)
 
@@ -173,7 +175,7 @@ def history(
 ):
     """Display the catalog history.
 
-    If --product_id is specified, then limit the output to commits where this product existed in the catalog
+    If --product_id is specified, then filter the history for commits where the product existed in the catalog
     """
     stac_repository = load_repository(config, mock=not git)
 

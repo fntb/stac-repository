@@ -32,7 +32,7 @@ stac-repository --help
 
 ```
 
- Usage: stac-repository [OPTIONS] COMMAND [ARGS]...
+ Usage: root [OPTIONS] COMMAND [ARGS]...
 
  🌍🛰️     STAC Repository
  The interface to manage STAC Repositories.
@@ -43,11 +43,11 @@ stac-repository --help
 │ --help                        Show this message and exit.                                                                                                                              │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ version           Show the stac-repository version number.                                                                                                                             │
+│ version           Show stac-repository version number.                                                                                                                                 │
 │ ingest            Discover and ingest products from a source using an installed processor.                                                                                             │
 │ discover          Discover products from a source using an installed processor.                                                                                                        │
-│ ingest-products   Discover products from a source using an installed processor.                                                                                                        │
-│ prune             Delete products from the catalog.                                                                                                                                    │
+│ ingest-products   Ingest products from a product sources using an installed processor.                                                                                                 │
+│ prune             Remove products from the catalog.                                                                                                                                    │
 │ history           Display the catalog history.                                                                                                                                         │
 │ rollback          Rollback the catalog to a previous commit.                                                                                                                           │
 │ backup            Clone (or pull) the repository **to** a backup location.                                                                                                             │
@@ -56,31 +56,30 @@ stac-repository --help
 ```
 
 ```console
-stac-repository ingest demo /tmp/tmpo3gxe_4d --config /tmp/stac_repository-demo-mzdnibqa.toml
+stac-repository ingest demo /tmp/tmpnm_2jmfs --config /tmp/stac_repository-demo-dxmvd0fy.toml
 ```
 
 ```
- • /tmp/tmpo3gxe_4d/1 : Ingested
- • /tmp/tmpo3gxe_4d/2 : Ingested
+ • /tmp/tmpnm_2jmfs/1 : Ingested
+ • /tmp/tmpnm_2jmfs/2 : Ingested
 ```
 
 ```console
-stac-repository history --config /tmp/stac_repository-demo-mzdnibqa.toml
+stac-repository history --config /tmp/stac_repository-demo-dxmvd0fy.toml
 ```
 
 ```
 History
- • 14117c5cd5a05ec52ebd0e2f8b87cf7416a8297d on 2025-02-10 14:09:05+00:00
+ • cb286cd9def1ad41e7e65841d46fbfde95fa0697 on 2025-02-11 10:09:11+00:00
 
-        + a49dfaa9679e45be931be0f26e84fade (version=0.0.1, processor=demo:0.0.1) 8d724e3c19b048109ef084f47fe00393 (version=0.0.1, processor=demo:0.0.1)
+        + ffc0c1dfe6824bf799bb8c1363ad6470 (version=0.0.1, processor=demo:0.0.1) 945e41349f174e4aae02264e210927a7 (version=0.0.1, processor=demo:0.0.1)
 
- • 323dba2a67fdc335387bd48660e709c56eee7322 on 2025-02-10 14:09:05+00:00
-
+ • 766a0c3e120614a3975d8cb4571562237dc58a3e on 2025-02-11 10:09:11+00:00
 ```
 
 ## Python Demo
 
-Check out the [`demo.py`](./demo/ingest_products.py).
+See the [`demo.py`](./demo/ingest_products.py).
 
 ```python
 repository = StacRepositoryManaged(dir)
@@ -99,9 +98,11 @@ for product_source in repository.discover("demo", source):
 #     print(f"{str(report.context)=} : {str(report.details)=}")
 ```
 
-### The Processor Protocol
+## The Processor Protocol
 
-For an example of the Processor protocol, check out [`stac-processor-demo`](./stac_processor_demo/)
+A processor is a python module implementing the processor protocol described [in this file](stac_repository/managed/processor.py).
+
+An example can be found in [`stac-processor-demo`](./stac_processor_demo/)
 
 ## Project Motivation - _Why is it needed ? What problem does it solve ?_
 
@@ -150,8 +151,14 @@ pip install .[dev,cli]
 - `[cli]` is required to use the CLI,
 - `[dev]` to run the demo or the test suite
 
-### Test suite
+### Test Suite
 
 ```bash
 pytest -vv
+```
+
+### Generating the CLI Demo
+
+```bash
+python make_docs.py
 ```
