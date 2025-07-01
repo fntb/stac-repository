@@ -1,66 +1,91 @@
-from typing import Annotated, Optional
-from os import path, PathLike
-import io
+from typing import (
+    Annotated,
+    Optional,
+    List,
+)
 
 import pystac
-import pystac.layout
 
 import typer
 
 import rich
 import rich.console
 import rich.status
-# import rich.traceback
 from rich import print
+from rich import prompt
 
-from stac_repository.managed import MockStacRepositoryManaged
-from stac_repository.managed import StacRepositoryManaged
-from stac_repository.managed import StacRepositoryConfig
+from stac_repository import (
+    __version__,
+    discovered_processors,
+    BaseStacRepository,
+    RepositoryAlreadyInitializedError,
+    RepositoryNotFoundError,
+    CommitNotFoundError,
+    Backend,
+    BackupValueError,
+    RefTypeError,
+    ProcessorNotFoundError,
+    ProcessingError,
+    ProcessingErrors,
+    StacObjectError,
+    ParentNotFoundError,
+    ParentCatalogError
+)
 
-from stac_repository import __version__
-from .config import load_config
-from .print import print_jobs
-from .print import commit_to_rich_str
-from .print import list_item
+from stac_repository_cli.backends import discovered_backends
+from .print import print_jobs, print_error
+# from .print import commit_to_rich_str
+# from .print import list_item
 
-# rich.traceback.install(
-#     show_locals=True,
-#     word_wrap=True,
-#     max_frames=None,
-#     locals_max_string=160
-# )
+err_console = rich.console.Console(stderr=True)
+
+
+class BackendNotFoundError(ValueError):
+    ...
+
+
+def get_backend(backend_id: str) -> Backend:
+    if backend_id not in discovered_backends:
+        err_console.print(f"Backend {backend_id} not found.")
+        raise typer.Exit(1)
+
+    return discovered_backends[backend_id]
+
+
+def init_repository(
+    backend_id: str,
+    repository: str,
+    root_catalog: str | pystac.Catalog
+) -> BaseStacRepository:
+
+    backend = get_backend(backend_id)
+
+    try:
+        return backend.StacRepository.init(
+            repository,
+            root_catalog
+        )
+    except RepositoryAlreadyInitializedError as error:
+        print_error(f"Repository {repository} already initialized.", from_error=error)
+        raise typer.Exit(1)
 
 
 def load_repository(
-        config_file: PathLike[str],
-        mock: bool = False
-):
-    config = load_config(config_file)
+    backend_id: str,
+    repository: str
+) -> BaseStacRepository:
 
-    if mock:
-        return MockStacRepositoryManaged(
-            path.abspath(config.repository),
-            catalog_config=StacRepositoryConfig(
-                id=config.catalog.id,
-                title=config.catalog.title,
-                description=config.catalog.description,
-            )
+    backend = get_backend(backend_id)
+
+    try:
+        return backend.StacRepository(
+            repository
         )
-    else:
-        return StacRepositoryManaged(
-            path.abspath(config.repository),
-            catalog_config=StacRepositoryConfig(
-                id=config.catalog.id,
-                title=config.catalog.title,
-                description=config.catalog.description,
-            ),
-            git_lfs_url=config.git.lfs.url if config.git.lfs else None,
-            git_lfs_filter=config.git.lfs.filter if config.git.lfs else None,
-            signature=config.git.signature
-        )
+    except RepositoryNotFoundError as error:
+        print_error(f"Repository {repository} not found.", from_error=error)
+        raise typer.Exit(1)
 
 
-# rich.traceback refuses to handle __notes__ and ExceptionGroups
 app = typer.Typer(pretty_exceptions_enable=False)
 
 
@@ -80,144 +105,275 @@ def version():
 
 
 @app.command()
+def show_backends():
+    """Show installed stac-repository backends.
+    """
+    for backend in discovered_backends.keys():
+        print(f"{backend} version={discovered_backends[backend].__version__}")
+
+
+@app.command()
+def show_processors():
+    """Show installed stac-repository processors.
+    """
+    for processor in discovered_processors.keys():
+        print(f"{processor} version={discovered_processors[processor].__version__}")
+
+
+@app.command()
+def init(
+    repository: Annotated[
+        str,
+        typer.Argument(help="Repository URI. Interpreted by the chosen backend.")
+    ],
+    backend: str = "file",
+    root_catalog: Annotated[
+        Optional[str],
+        typer.Option(
+            help="Existing root catalog to initialize the repository from. Leave out to use the interactive initializer.")
+    ] = None
+):
+    """Initialize the repository.
+    """
+
+    root_catalog_instance: pystac.Catalog
+
+    if not root_catalog:
+        root_catalog = prompt.Prompt.ask(
+            "Initialize from an existing root catalog file ?",
+            default="Leave blank to use the interactive initializer"
+        )
+
+        if root_catalog == "Leave blank to use the interactive initializer":
+            root_catalog = None
+
+            id = prompt.Prompt.ask("id", default="root")
+            title = prompt.Prompt.ask("title")
+            description = prompt.Prompt.ask("description")
+            license = prompt.Prompt.ask("license", default="proprietary")
+
+            root_catalog_instance = pystac.Catalog(
+                id,
+                description,
+                title,
+                extra_fields={
+                    "license": license
+                }
+            )
+
+            print(root_catalog_instance.to_dict(include_self_link=False))
+
+    if root_catalog:
+        root_catalog_instance = pystac.Catalog.from_file(root_catalog)
+        print(root_catalog_instance.to_dict(include_self_link=False))
+
+    if not prompt.Confirm.ask("Use as root catalog ?", default=False):
+        return
+
+    init_repository(
+        backend_id=backend,
+        repository=repository,
+        root_catalog=root_catalog_instance
+    )
+
+
+@app.command()
 def ingest(
-    processor_id: str,
-    source: str,
-    config: str = "stac_repository.toml",
-    git: bool = True,
+    repository: Annotated[
+        str,
+        typer.Argument(help="Repository URI. Interpreted by the chosen backend.")
+    ],
+    sources: Annotated[
+        List[str],
+        typer.Argument(help="Sources to ingest.")
+    ],
+    parent: Annotated[
+        Optional[str],
+        typer.Option(
+            help=(
+        "Id of the catalog or collection under which to ingest the products."
+        " Defaults to the root catalog if unspecified."
+                )
+        )
+    ] = None,
+    backend: Optional[str] = "file",
+    processor: Annotated[
+        Optional[str],
+        typer.Option(
+            help="Processor (if any) to use to discover and ingest products"
+        )
+    ] = "none",
 ):
-    """Discover and ingest products from a source using an installed processor.
+    """Ingest products from various sources (eventually using an installed processor).
 
-    This command combines `discover` and `ingest-products`.
+    If a --processor is specified it will be used to discover and process the products.
+    If left unspecified sources must be paths to stac objects (catalog, collection or item).
     """
-    stac_repository = load_repository(config, mock=not git)
+    stac_repository = load_repository(backend, repository)
 
     console = rich.get_console()
 
-    print_jobs(
-        stac_repository.ingest(
-            processor_id,
-            source,
-        ),
-        operation_name="Ingestion [{0}] {1}".format(
-            processor_id,
-            source
-        ),
-        console=console
-    )
+    try:
+        print_jobs(
+            stac_repository.ingest(
+                *sources,
+                processor_id=processor,
+                parent_id=parent,
+            ),
+            operation_name="Ingestion [{0}] {1}".format(
+                processor,
+                sources
+            ),
+            console=console
+        )
+    except (
+        ProcessorNotFoundError,
+        ProcessingError,
+        StacObjectError,
+        ParentNotFoundError,
+        ParentCatalogError
+    ) as error:
+        print_error(error, from_error=error)
+        raise typer.Exit(1)
+    except ProcessingErrors as errors:
+        print_error(f"Errors encountered : ")
+        print_error(errors, short_error=(
+            ProcessorNotFoundError,
+            ProcessingError,
+            StacObjectError,
+            ParentNotFoundError,
+            ParentCatalogError
+        ))
+        raise typer.Exit(1)
 
 
-@app.command()
-def discover(
-    processor_id: str,
-    source: str,
-    config: str = "stac_repository.toml",
-    git: bool = True,
-):
-    """Discover products from a source using an installed processor.
-    """
-    stac_repository = load_repository(config, mock=not git)
+# @app.command()
+# def prune(
+#     product_ids: list[str],
+#     config: str = "stac_repository.toml",
+#     git: bool = True,
+# ):
+#     """Remove products from the catalog.
+#     """
+#     stac_repository = load_repository(config, mock=not git)
 
-    console = rich.get_console()
+#     console = rich.get_console()
 
-    console.print(f"[bold]{processor_id} : {source}[/bold]")
-    for product_source in stac_repository.discover(processor_id, source):
-        console.print(list_item(product_source))
-
-
-@app.command()
-def ingest_products(
-    processor_id: str,
-    *product_sources: list[str],
-    config: str = "stac_repository.toml",
-    git: bool = True,
-):
-    """Ingest products from a product sources using an installed processor.
-    """
-    stac_repository = load_repository(config, mock=not git)
-
-    console = rich.get_console()
-
-    print_jobs(
-        stac_repository.ingest_products(processor_id, *product_sources),
-        operation_name="Ingestion [{0}]".format(
-            processor_id
-        ),
-        console=console
-    )
+#     print_jobs(
+#         stac_repository.prune(*product_ids),
+#         operation_name="Deletion",
+#         console=console
+#     )
 
 
-@app.command()
-def prune(
-    product_ids: list[str],
-    config: str = "stac_repository.toml",
-    git: bool = True,
-):
-    """Remove products from the catalog.
-    """
-    stac_repository = load_repository(config, mock=not git)
+# @app.command()
+# def history(
+#     product_id: Annotated[Optional[str], typer.Argument()] = None,
+#     verbose: bool = False,
+#     config: str = "stac_repository.toml",
+#     git: bool = True,
+# ):
+#     """Display the catalog history.
 
-    console = rich.get_console()
+#     If --product_id is specified, then filter the history for commits where the product existed in the catalog
+#     """
+#     stac_repository = load_repository(config, mock=not git)
 
-    print_jobs(
-        stac_repository.prune(*product_ids),
-        operation_name="Deletion",
-        console=console
-    )
+#     console = rich.get_console()
 
+#     if product_id:
+#         console.print(f"[bold]Product History {product_id}[/bold]")
+#     else:
+#         console.print(f"[bold]History[/bold]")
 
-@app.command()
-def history(
-    product_id: Annotated[Optional[str], typer.Argument()] = None,
-    verbose: bool = False,
-    config: str = "stac_repository.toml",
-    git: bool = True,
-):
-    """Display the catalog history.
-
-    If --product_id is specified, then filter the history for commits where the product existed in the catalog
-    """
-    stac_repository = load_repository(config, mock=not git)
-
-    console = rich.get_console()
-
-    if product_id:
-        console.print(f"[bold]Product History {product_id}[/bold]")
-    else:
-        console.print(f"[bold]History[/bold]")
-
-    for commit in stac_repository.history(product_id):
-        console.print(list_item(commit_to_rich_str(
-            commit,
-            include_message=verbose
-        )))
+#     for commit in stac_repository.history(product_id):
+#         console.print(list_item(commit_to_rich_str(
+#             commit,
+#             include_message=verbose
+#         )))
 
 
 @app.command()
 def rollback(
-    ref: str,
-    config: str = "stac_repository.toml",
-    git: bool = True,
+    repository: Annotated[
+        str,
+        typer.Argument(help="Repository URI. Interpreted by the chosen backend.")
+    ],
+    ref: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "Commit ref."
+                # "Either the commit id, "
+                # "a datetime (which will rollback to the first commit **before** this date), "
+                # "or an integer (0 being the current head, 1 the previous commit, 2 the second previous commit, etc)."
+            )
+        )
+    ],
+    backend: str = "file",
 ):
-    """Rollback the catalog to a previous commit.
-
-    --ref must be a commit ref.
-
-    Datetime rollback are not supported yet.
+    """Rollback the catalog to a previous commit. Support depends on the chosen backend.
     """
-    stac_repository = load_repository(config, mock=not git)
-    stac_repository.rollback(ref)
+
+    stac_repository = load_repository(backend, repository)
+    try:
+        commit = stac_repository.get_commit(ref)
+    except CommitNotFoundError as error:
+        print_error(f"No commit found matching {ref}.", from_error=error)
+        raise typer.Exit(1)
+    except RefTypeError as error:
+        print_error(f"Bad --ref option : {str(error)}.", from_error=error)
+        raise typer.Exit(1)
+
+    if commit.rollback() == NotImplemented:
+        print_error(f"Backend {backend} does not support rollbacks.")
+        raise typer.Exit(1)
 
 
 @app.command()
 def backup(
-    url: str,
-    config: str = "stac_repository.toml",
-    git: bool = True,
+    repository: Annotated[
+        str,
+        typer.Argument(help="Repository URI. Interpreted by the chosen backend.")
+    ],
+    backup: Annotated[
+        str,
+        typer.Argument(help="Backup URI. Interpreted by the chosen backend.")
+    ],
+    ref: Annotated[
+        Optional[str],
+        typer.Option(
+            help=(
+                "Commit ref."
+                # "Either the commit id, "
+                # "a datetime (which will rollback to the first commit **before** this date), "
+                # "or an integer (0 being the current head, 1 the previous commit, 2 the second previous commit, etc)."
+            )
+        )
+    ] = None,
+    backend: str = "file",
 ):
-    """Clone (or pull) the repository **to** a backup location.
-
-    ssh:// backups are not supported yet.
+    """Clone (or pull) the repository **to** a backup location. Support depends on the chosen backend.
     """
-    stac_repository = load_repository(config, mock=not git)
-    stac_repository.backup(url)
+
+    stac_repository = load_repository(backend, repository)
+
+    if ref is not None:
+        try:
+            commit = stac_repository.get_commit(ref)
+        except CommitNotFoundError as error:
+            print_error(f"No commit found matching {ref}.", from_error=error)
+            raise typer.Exit(1)
+        except RefTypeError as error:
+            print_error(f"Bad --ref option : {str(error)}.", from_error=error)
+            raise typer.Exit(1)
+    else:
+        commit = next(stac_repository.commits)
+
+    try:
+        if commit.backup(backup) == NotImplemented:
+            print_error(f"Backend {backend} does not support backups.")
+            raise typer.Exit(1)
+    except BackupValueError as error:
+        print_error(f"Bad --backup option : {str(error)}.", from_error=error)
+        raise typer.Exit(1)

@@ -25,7 +25,13 @@ license-files = ["LICENCE.txt"]
 
 requires-python = ">=3.12"
 
-dependencies = ["pystac ~= 1.11.0"]
+dependencies = [
+    "pystac ~= 1.11.0",
+    "pydantic ~= 2.10.3",
+    "stac_pydantic ~= 3.2.0",
+    "orjson ~= 3.10",
+    "xxhash~=3.5.0",
+]
 
 [dependency-groups]
 
@@ -54,14 +60,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = [
-    "stac_repository",
-    "stac_repository.git",
-    "stac_repository.lib",
-    "stac_repository.managed",
-    "stac_repository.mock",
-    "stac_repository_cli",
-]
+packages = ["stac_repository", "stac_repository_cli"]
 
 [tool.setuptools.dynamic]
 version = { attr = "stac_repository.__about__.__version__" }

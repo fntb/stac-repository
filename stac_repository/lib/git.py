@@ -308,10 +308,10 @@ class Repository():
 
     def commit(
         self,
-            message: str,
-            author: Signature,
-            committer: Signature
+        message: str,
     ) -> Commit:
+
+        signature = Signature.make(f"{__name_public__}:{__version__}")
 
         self._git(
             "commit",
@@ -320,10 +320,10 @@ class Repository():
             message,
             env={
                 **dict(os.environ),
-                "GIT_AUTHOR_NAME": author.name,
-                "GIT_AUTHOR_EMAIL": author.email,
-                "GIT_COMMITTER_NAME": committer.name,
-                "GIT_COMMITTER_EMAIL": committer.email,
+                "GIT_AUTHOR_NAME": signature.name,
+                "GIT_AUTHOR_EMAIL": signature.email,
+                "GIT_COMMITTER_NAME": signature.name,
+                "GIT_COMMITTER_EMAIL": signature.email,
                 "GIT_COMMITTER_DATE": datetime.datetime.now(datetime.timezone.utc).isoformat()
             }
         )

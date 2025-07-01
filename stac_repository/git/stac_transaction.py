@@ -16,7 +16,7 @@ from .lib.href_is_path import href_is_path
 from .__about__ import __version__, __name_public__
 
 from .base_stac_transaction import BaseStacTransaction
-from .git.git import Signature, AbstractTagStrategy
+from .git.git import AbstractTagStrategy
 from .stac_repository import StacRepository
 from .stac_index import StacIndex
 
@@ -66,7 +66,6 @@ class StacTransactionStagingError(Exception):
 
 class StacTransaction(StacIndex, BaseStacTransaction):
 
-    _default_signature: Signature
     _context_commit_args: dict[str, Any]
 
     def __init__(
@@ -74,9 +73,7 @@ class StacTransaction(StacIndex, BaseStacTransaction):
         repository: StacRepository,
     ):
         BaseStacTransaction.__init__(self)
-        StacIndex.__init__(self, repository._repository,
-                           repository.catalog_file)
-        self._default_signature = repository.signature
+        StacIndex.__init__(self, repository._repository, repository.catalog_file)
 
     def stage(self, *modified_objects: str | pystac.STACObject):
         for modified_object in modified_objects:
@@ -127,23 +124,11 @@ class StacTransaction(StacIndex, BaseStacTransaction):
             self,
             *,
             message: str = "Transaction",
-            signature: Signature | str | None = None,
             tag: str | AbstractTagStrategy | None = None
     ):
-        if isinstance(signature, str):
-            signature = Signature.make(signature)
-        elif signature is None:
-            signature = self._default_signature
-        else:
-            signature
-
         self.commitable()
 
-        self._repository.commit(
-            message,
-            signature,
-            signature
-        )
+        self._repository.commit(message)
 
         if isinstance(tag, str):
             self._repository.head.tag(tag)

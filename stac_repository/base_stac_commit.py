@@ -1,92 +1,93 @@
 from __future__ import annotations
+from typing import (
+    Dict,
+    Optional,
+    Type,
+)
+
+from types import (
+    NotImplementedType
+)
+
+import logging
 import datetime
-import abc
+from abc import abstractmethod, ABCMeta
 
 import pystac
-from .lib.stac import walk_stac_object
-from .lib.stac import get_stac_object
+
+from .stac_catalog import (
+    get_child as _get_child,
+    ObjectNotFoundError as _ObjectNotFoundError
+)
 
 
-class BaseStacCommit(metaclass=abc.ABCMeta):
+class BackupValueError(ValueError):
+    ...
 
-    @property
-    @abc.abstractmethod
-    def parent(self) -> BaseStacCommit | None:
+
+class BaseStacCommit(metaclass=ABCMeta):
+
+    _root_catalog_href: str
+
+    @abstractmethod
+    def __init__(self, repository):
         raise NotImplementedError
 
     @property
-    @abc.abstractmethod
-    def catalog(self) -> pystac.Catalog:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def fetch(self, href: str, *, text: bool = True, hash: bool = False) -> str | bytes:
-        raise NotImplementedError
-
-    @property
-    @abc.abstractmethod
+    @abstractmethod
     def id(self) -> str:
         raise NotImplementedError
 
     @property
-    @abc.abstractmethod
+    @abstractmethod
     def datetime(self) -> datetime.datetime:
         raise NotImplementedError
 
     @property
-    @abc.abstractmethod
-    def message(self) -> str | None:
+    @abstractmethod
+    def message(self) -> Optional[str]:
         raise NotImplementedError
 
-    @property
-    def objects(self):
-        yield from walk_stac_object(self.catalog)
+    @abstractmethod
+    def get(self, href: str) -> pystac.Item | pystac.Collection | pystac.Catalog:
+        raise NotImplementedError
 
-    @property
-    def added_objects(self):
-        if self.parent is None:
-            yield from walk_stac_object(self.catalog)
-            return
+    @abstractmethod
+    def rollback(self) -> Optional[NotImplementedType]:
+        """Rollback the repository to this commit.
 
-        for stac_object in walk_stac_object(self.catalog):
-            if get_stac_object(self.parent.catalog, stac_object.id) is None:
-                yield stac_object
+        Returns:
+            NotImplemented: If the concrete implementation does not support rollbacks.
+        """
+        raise NotImplementedError
 
-    @property
-    def removed_objects(self):
-        if self.parent is None:
-            return
+    @abstractmethod
+    def backup(self, backup_url: str) -> Optional[NotImplementedType]:
+        """Backup the repository as it was in this commit.
 
-        for stac_object in walk_stac_object(self.parent.catalog):
-            if get_stac_object(self.catalog, stac_object.id) is None:
-                yield stac_object
+        Returns:
+            NotImplemented: If the concrete implementation does not support backups.
 
-    @property
-    def modified_objects(self):
-        if self.parent is None:
-            return
+        Raises:
+            BackupValueError: If the backup_url is not valid
+        """
+        raise NotImplementedError
 
-        for stac_object in walk_stac_object(self.catalog):
-            parent_stac_object = get_stac_object(
-                self.parent.catalog, stac_object.id)
-            if parent_stac_object is None:
-                continue
+    def search(
+        self,
+        id: str
+    ) -> pystac.Item | pystac.Collection | pystac.Catalog | None:
+        """Searches the object with `id` in the commit catalog.
+        """
+        try:
+            return _get_child(
+                id=id,
+                href=self._root_catalog_href,
+                factory=self.get,
+                domain=self._root_catalog_href
+            ).object
+        except _ObjectNotFoundError:
+            return None
 
-            if stac_object.to_dict(
-                include_self_link=False
-            ) != parent_stac_object.to_dict(
-                include_self_link=False
-            ):
-                yield (stac_object, parent_stac_object)
-                continue
-
-            # if isinstance(stac_object, (pystac.Item, pystac.Collection)):
-            #     for key in stac_object.assets.keys():
-            #         asset_hash = self.fetch(
-            #             stac_object.assets[key].href, hash=True)
-            #         parent_asset_hash = self.parent.fetch(
-            #             stac_object.assets[key].href, hash=True)
-
-            #         if asset_hash != parent_asset_hash:
-            #             yield (stac_object, parent_stac_object)
-            #             break
+    def describe(self):
+        raise NotImplementedError

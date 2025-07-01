@@ -1,3 +1,1 @@
-
-from .git import Signature
-from .git import AbstractTagStrategy
+from .git_stac_commit import GitStacCommit as StacCommit
