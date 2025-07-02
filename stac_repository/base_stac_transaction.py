@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import (
     Optional
 )
@@ -9,22 +11,28 @@ from abc import (
 
 import contextlib
 import os
+import io
 
 import pystac
+import pystac.layout
+import pystac.stac_io
+
+import json
 
 from .base_stac_commit import BaseStacCommit
 
 from .stac_catalog import (
     get_child as _get_child,
     WalkedStacObject,
-    ObjectNotFoundError as _ObjectNotFoundError,
+    ObjectNotFoundError,
     compute_extent as _compute_extent,
     is_href_file as _is_href_file,
-    StacObjectError
+    StacObjectError,
+    make_from_file as _make_from_file
 )
 
 
-class ParentNotFoundError(_ObjectNotFoundError):
+class ParentNotFoundError(ObjectNotFoundError):
     pass
 
 
@@ -34,6 +42,21 @@ class ParentCatalogError(ValueError):
 
 class RootUncatalogError(ValueError):
     pass
+
+
+class TransactionStacIO(pystac.stac_io.DefaultStacIO):
+
+    _transaction: BaseStacTransaction
+
+    def __init__(self, *args: pystac.Any, transaction: BaseStacTransaction, **kwargs: pystac.Any):
+        super().__init__(*args, **kwargs)
+        self._transaction = transaction
+
+    def read_text_from_href(self, href: str) -> str:
+        return self._transaction.get(href)
+
+    def write_text_to_href(self, href: str, txt: str) -> None:
+        return self._transaction.set(href, txt)
 
 
 class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
@@ -52,17 +75,21 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
             raise error
 
     @abstractmethod
-    def set(self, href: str, value: pystac.Item | pystac.Catalog):
+    def set(self, href: str, value: str):
         raise NotImplementedError
 
     @abstractmethod
-    def set_asset(self, href: str, asset_file: str):
+    def set_asset(self, href: str, asset: io.BytesIO | io.StringIO | bytes | str):
         raise NotImplementedError
 
     @abstractmethod
     def unset(self, href: str):
         """Delete the STAC object at href, all its descendants, and all their assets"""
         raise NotImplementedError
+
+    @property
+    def io(self) -> TransactionStacIO:
+        return TransactionStacIO(transaction=self)
 
     @abstractmethod
     def abort(self):
@@ -99,23 +126,29 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
 
         if parent_id is None:
             (parent_href, parent, ancestry) = WalkedStacObject(
-                self._root_catalog_href, self.get(self._root_catalog_href), [])
+                self._root_catalog_href,
+                _make_from_file(self._root_catalog_href, self.io),
+                []
+            )
         else:
             try:
                 (parent_href, parent, ancestry) = _get_child(
                     id=parent_id,
                     href=self._root_catalog_href,
-                    factory=self.get,
-                    domain=self._root_catalog_href
+                    stac_io=self.io,
+                    domain=os.path.dirname(self._root_catalog_href)
                 )
-            except _ObjectNotFoundError as error:
+            except ObjectNotFoundError as error:
                 raise ParentNotFoundError(f"Parent {parent_id} not found in catalog") from error
 
         if isinstance(parent, pystac.Item):
             raise ParentCatalogError(f"Cannot catalog under {parent_id}, this is an Item")
 
         # Uncatalog the old version of the product, if any
-        self.uncatalog(product.id)
+        try:
+            self.uncatalog(product.id)
+        except ObjectNotFoundError:
+            pass
 
         # Separate product from its ascendants, if any
         product.set_parent(None)
@@ -124,60 +157,70 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
         # Resolve descendants (and only descendants) into memory
         # Preserve the assets absolute hrefs
         product.resolve_links()
-        product.make_all_asset_hrefs_absolute()
+        if isinstance(product, pystac.Item):
+            product.make_asset_hrefs_absolute()
+        else:
+            product.make_all_asset_hrefs_absolute()
 
         # Join product to the catalog (parent and root) and normalize all descendants hrefs
-        product.set_parent(parent)
-        product.normalize_hrefs(
+        if not isinstance(product, pystac.Item):
+            parent.add_child(
+                product,
+                title=product.title,
+                set_parent=True
+            )
+        else:
+            parent.add_item(
+                product,
+                product.common_metadata.title,
+                set_parent=True
+            )
+
+        # Compute the parent new extent and summary
+        # TODO : Recompute each ancestor instead
+        if isinstance(parent, pystac.Collection):
+            parent.extent = _compute_extent(obj=parent, href=parent_href, stac_io=self.io)
+
+        # Save the parent
+        # TODO : Save each ancestor instead
+        parent.normalize_and_save(
             self._root_catalog_href,
             strategy=pystac.layout.BestPracticesLayoutStrategy(),
+            catalog_type=pystac.CatalogType.SELF_CONTAINED,
+            stac_io=self.io,
             skip_unresolved=True
         )
 
-        # Compute the parent new extent and summary
-        if isinstance(parent, pystac.Collection):
-            parent.extent = _compute_extent(obj=parent, href=parent_href, factory=self.get)
+        # Recursively save the product assets
+        def save_assets(obj: pystac.Item | pystac.Collection | pystac.Catalog):
+            # identify local assets and copy them into the catalog while updating the node asset href
+            if isinstance(obj, (pystac.Item, pystac.Collection)):
+                for asset in obj.assets.values():
+                    if _is_href_file(asset.href):
+                        relative_cataloged_asset_href = os.path.basename(asset.href)
+                        absolute_cataloged_asset_href = os.path.join(
+                            os.path.dirname(asset.owner.self_href),
+                            relative_cataloged_asset_href
+                        )
 
-        # Recursively save_object the parent, the product and all its descendants
-        def set_product(obj: pystac.Item | pystac.Collection | pystac.Catalog):
-            self.set(obj.self_href, obj)
+                        with open(asset.href, "rb") as asset_stream:
+                            self.set_asset(absolute_cataloged_asset_href, asset_stream)
+
+                        asset.href = relative_cataloged_asset_href
 
             if isinstance(obj, (pystac.Catalog, pystac.Collection)):
                 for child in obj.get_children():
-                    set_product(child)
+                    save_assets(child)
                 for item in obj.get_items():
-                    set_product(item)
+                    save_assets(item)
 
-        self.set(parent_href, parent)
-        set_product(product)
+        save_assets(product)
 
-        # Walk each node of the product and a copy of the source product,
-        # identify local assets and copy them into the catalog while updating the node asset href
-        def walk_product_assets(
-            obj: pystac.Item | pystac.Collection | pystac.Catalog
-        ):
-            if isinstance(obj, (pystac.Item, pystac.Collection)):
-                for asset in obj.assets.values():
-                    yield asset
-
-            if isinstance(obj, pystac.Catalog):
-                for item in obj.get_items():
-                    yield from walk_product_assets(item)
-                for child in obj.get_children():
-                    yield from walk_product_assets(child)
-
-        for asset in walk_product_assets(product):
-            if _is_href_file(asset.href):
-                asset_file = asset.href
-                cataloged_asset_href = os.path.join(
-                    os.path.dirname(asset.owner.self_href),
-                    os.path.basename(asset_file)
-                )
-
-                self.set_asset(cataloged_asset_href, asset_file)
-
-        # Recursively save_object the product and all its descendants
-        set_product(product)
+        # Save the modified asset links
+        if isinstance(product, pystac.Item):
+            product.save_object(stac_io=self.io, include_self_link=False)
+        else:
+            product.save(stac_io=self.io)
 
     def uncatalog(
         self,
@@ -189,15 +232,12 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
             RootUncatalogError: The product is the catalog root
             StacObjectError: Cannot compute the parent new extent
         """
-        try:
-            (product_href, product, ancestry) = _get_child(
-                id=product_id,
-                href=self._root_catalog_href,
-                factory=self.get,
-                domain=self._root_catalog_href
-            )
-        except _ObjectNotFoundError as error:
-            return
+        (product_href, product, ancestry) = _get_child(
+            id=product_id,
+            href=self._root_catalog_href,
+            stac_io=self.io,
+            domain=os.path.dirname(self._root_catalog_href)
+        )
 
         if not ancestry:
             raise RootUncatalogError(f"Cannot uncatalog the root")
@@ -211,6 +251,6 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
             parent.remove_child(product_id)
 
         if isinstance(parent, pystac.Collection):
-            parent.extent = _compute_extent(obj=parent, href=parent_href, factory=self.get)
+            parent.extent = _compute_extent(obj=parent, href=parent_href, stac_io=self.io)
 
-        self.set(parent_href, parent)
+        parent.save(stac_io=self.io)

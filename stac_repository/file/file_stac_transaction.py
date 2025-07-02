@@ -3,6 +3,7 @@ from typing import (
 )
 
 import os
+import io
 import shutil
 import orjson
 import pystac
@@ -81,18 +82,23 @@ class FileStacTransaction(FileStacCommit, BaseStacTransaction):
         self._remove_empty_directories()
         self._unlock()
 
-    def set(self, href: str, value: pystac.Item | pystac.Collection | pystac.Catalog):
-        obj_json = value.to_dict(include_self_link=False, transform_hrefs=False)
-        obj_s = orjson.dumps(obj_json)
+    def set(self, href: str, value: str):
+        # obj_json = value.to_dict(include_self_link=False, transform_hrefs=False)
+        # obj_s = orjson.dumps(obj_json)
 
         os.makedirs(os.path.dirname(href), exist_ok=True)
 
-        with open(f"{href}.tmp", "wb") as file:
-            file.write(obj_s)
+        with open(f"{href}.tmp", "w") as file:
+            file.write(value)
 
     def unset(self, href: str):
         dir = os.path.dirname(href)
         os.rename(dir, f"{dir}.bck")
 
-    def set_asset(self, href: str, asset_file: str):
-        shutil.copyfile(asset_file, f"{href}.tmp")
+    def set_asset(self, href: str, asset: io.BytesIO | bytes):
+        with open(f"{href}.tmp", "wb") as asset_file:
+            if isinstance(asset, bytes):
+                asset_file.write(asset)
+            else:
+                while (asset_chunk := asset.read(50_000)):
+                    asset_file.write(asset_chunk)

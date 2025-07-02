@@ -4,7 +4,7 @@ from typing import (
     List,
     Optional,
     Tuple,
-    Type
+    Type,
 )
 
 import traceback
@@ -18,98 +18,104 @@ from rich import print
 
 from stac_repository import JobState
 from stac_repository import JobReport
-from stac_repository import BaseStacCommit
+from stac_repository.stac_catalog import get_version as _get_version
 
 
-def indent(s: str) -> str:
-    return "\t" + "\n\t".join(s.splitlines())
+def style_indent(s: str | List[str]) -> str:
+    return "   " + "\n   ".join(s.splitlines() if isinstance(s, str) else s)
 
 
-def list_item(s: str | List[str]) -> str:
-    if isinstance(s, str):
-        return " • " + "\n   ".join(s.splitlines())
-    else:
-        l = s
-        return " • " + "\n   ".join([
-            "\n   ".join(s.splitlines())
-            for s in l
-        ])
+def style_bold(s: str) -> str:
+    return f"[bold]{s}[/bold]"
 
 
-def job_context_to_rich_str(job_context: str) -> str:
-    return f"[bold]{job_context}[/bold]"
+def style_red(s: str) -> str:
+    return f"[red]{s}[/red]"
 
 
-def error_to_rich_str(
-    error: BaseException | str,
-    from_error: Optional[BaseException] = None,
-    short_error: Optional[Type[BaseException] | Tuple[Type[BaseException]]] = None,
+def style_green(s: str) -> str:
+    return f"[green]{s}[/green]"
+
+
+def style_list_item(s: str | List[str]) -> str:
+    return " • " + style_indent(s).strip()
+
+
+def style_list(l: List[str | List[str]]) -> str:
+    return "\n".join(style_list_item(s) for s in l)
+
+
+def print_list(l: List[str | List[str]], console: rich.console.Console | None = None):
+    console = console or rich.get_console()
+
+    console.print(style_list(l))
+
+
+def style_error(
+    message: BaseException | str,
+    *,
+    error: Optional[BaseException] = None,
+    no_traceback: Optional[bool | Type[BaseException] | Tuple[Type[BaseException]]] = True,
 ) -> str:
     error_str: str
+    traceback_str: str = ""
 
-    if isinstance(error, str):
-        if from_error is not None:
-            error_str = f"[{type(from_error).__name__}] {error}"
+    if isinstance(message, str):
+        if error is not None:
+            error_str = f"[{type(error).__name__}] {message}"
 
-            if short_error is not None and not isinstance(from_error, short_error):
-                error_str += "\n" + "\n".join(traceback.format_exception(from_error))
+            if no_traceback is not True and (no_traceback is False or not isinstance(error, no_traceback)):
+                traceback_str = "\n" + "\n".join(traceback.format_exception(error))
         else:
-            error_str = error
+            error_str = message
     else:
+        error = message
         error_str = f"[{type(error).__name__}] {str(error)}"
 
-        if short_error is not None and not isinstance(error, short_error):
-            error_str += "\n" + "\n".join(traceback.format_exception(error))
+        if no_traceback is not True and (no_traceback is False or not isinstance(error, no_traceback)):
+            traceback_str = "\n" + "\n".join(traceback.format_exception(error))
 
-    return f"[bold red]{error_str}[/bold red]"
+    return style_red(style_bold(error_str)) + traceback_str
 
 
-def error_dict_to_rich_str(
+def style_errors(
     errors: Dict[str, BaseException | str],
-    short_error: Optional[Type[BaseException] | Tuple[Type[BaseException]]] = None,
+    no_traceback: Optional[bool | Type[BaseException] | Tuple[Type[BaseException]]] = True,
 ) -> str:
-    return list_item(
+    return style_list(
         [
             "{0} : {1}".format(
-                f"[bold]{context}[/bold]",
-                error_to_rich_str(error, short_error=short_error)
+                style_bold(key),
+                style_error(error, no_traceback=no_traceback)
             )
-            for (context, error) in errors.items()
+            for (key, error) in errors.items()
         ]
     )
 
 
-def job_error_to_rich_str(job_error: BaseException) -> str:
-    return error_to_rich_str(job_error)
-
-
-def job_result_to_rich_str(job_result: str):
-    return f"[bold green]{job_result}[/bold green]"
-
-
-def job_report_to_rich_str(job_report: JobReport):
+def style_report(job_report: JobReport):
     if job_report.state == JobState.INPROGRESS:
-        return "🛰️\t{0} : {1}".format(
-            job_context_to_rich_str(job_report.context),
+        return "🛰️ {0} : {1}".format(
+            style_bold(job_report.context),
             job_report.details
         )
     elif job_report.state == JobState.SUCCESS:
-        return list_item(
+        return style_list_item(
             "{0} : {1}".format(
-                job_context_to_rich_str(job_report.context),
-                job_result_to_rich_str(job_report.details)
+                style_bold(job_report.context),
+                style_green(style_bold(job_report.details))
             )
         )
     else:
-        return list_item(
+        return style_list_item(
             "{0} : {1}".format(
-                job_context_to_rich_str(job_report.context),
-                job_error_to_rich_str(job_report.details)
+                style_bold(job_report.context),
+                style_error(job_report.details)
             )
         )
 
 
-def print_jobs(operation: Iterator[JobReport], *, operation_name=".", console: rich.console.Console | None = None):
+def print_reports(operation: Iterator[JobReport], *, operation_name=".", console: rich.console.Console | None = None):
 
     console = console or rich.get_console()
     status = console.status(operation_name, spinner="earth")
@@ -117,33 +123,33 @@ def print_jobs(operation: Iterator[JobReport], *, operation_name=".", console: r
     for job_report in operation:
         if job_report.state == JobState.INPROGRESS:
             status.start()
-            status.update(job_report_to_rich_str(job_report))
+            status.update(style_report(job_report))
         else:
             status.stop()
-            console.print(job_report_to_rich_str(job_report))
+            console.print(style_report(job_report), crop=False, overflow="ignore")
 
 
-def product_to_rich_str(product: pystac.STACObject) -> str:
+def style_stac(obj: pystac.STACObject) -> str:
     return "{id} v{version}".format(
-        id=product.id,
-        version=BaseStacCommit.get_object_version(product)
+        id=obj.id,
+        version=_get_version(obj)
     )
 
 
 def print_error(
-    error: Exception | str | Dict[str, Exception | str],
+    message: Exception | str | Dict[str, Exception | str],
     *,
     console: rich.console.Console | None = None,
-    from_error: Optional[BaseException] = None,
-    short_error: Optional[Type[BaseException] | Tuple[Type[BaseException]]] = None,
+    error: Optional[BaseException] = None,
+    no_traceback: Optional[bool | Type[BaseException] | Tuple[Type[BaseException]]] = True,
 ):
 
     err_console = console or rich.console.Console(stderr=True)
 
-    if hasattr(error, "items"):
-        err_console.print(error_dict_to_rich_str(error, short_error=short_error))
+    if hasattr(message, "items"):
+        err_console.print(style_errors(message, no_traceback=no_traceback))
     else:
-        err_console.print(error_to_rich_str(error, from_error=from_error, short_error=short_error))
+        err_console.print(style_error(message, error=error, no_traceback=no_traceback))
 
 
 # def product_mutation_to_rich_str(product: pystac.STACObject, reprocessed_product: pystac.STACObject):

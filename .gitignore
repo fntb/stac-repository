@@ -6,3 +6,5 @@ __pycache__/
 /build
 /stac_repository.toml
 /test_catalog
+/test_catalogs
+/test_repositories

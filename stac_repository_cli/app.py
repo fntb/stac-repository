@@ -29,15 +29,14 @@ from stac_repository import (
     ProcessingErrors,
     StacObjectError,
     ParentNotFoundError,
-    ParentCatalogError
+    ParentCatalogError,
+    RootUncatalogError,
 )
 
 from stac_repository_cli.backends import discovered_backends
-from .print import print_jobs, print_error
+from .print import print_reports, print_error, print_list
 # from .print import commit_to_rich_str
 # from .print import list_item
-
-err_console = rich.console.Console(stderr=True)
 
 
 class BackendNotFoundError(ValueError):
@@ -46,7 +45,7 @@ class BackendNotFoundError(ValueError):
 
 def get_backend(backend_id: str) -> Backend:
     if backend_id not in discovered_backends:
-        err_console.print(f"Backend {backend_id} not found.")
+        print_error(f"Backend {backend_id} not found.")
         raise typer.Exit(1)
 
     return discovered_backends[backend_id]
@@ -66,7 +65,7 @@ def init_repository(
             root_catalog
         )
     except RepositoryAlreadyInitializedError as error:
-        print_error(f"Repository {repository} already initialized.", from_error=error)
+        print_error(f"Repository {repository} already initialized.", error=error)
         raise typer.Exit(1)
 
 
@@ -82,7 +81,7 @@ def load_repository(
             repository
         )
     except RepositoryNotFoundError as error:
-        print_error(f"Repository {repository} not found.", from_error=error)
+        print_error(f"Repository {repository} not found.", error=error)
         raise typer.Exit(1)
 
 
@@ -108,16 +107,22 @@ def version():
 def show_backends():
     """Show installed stac-repository backends.
     """
-    for backend in discovered_backends.keys():
-        print(f"{backend} version={discovered_backends[backend].__version__}")
+
+    print_list([
+        f"{backend} version={discovered_backends[backend].__version__}"
+        for backend in discovered_backends.keys()
+    ])
 
 
 @app.command()
 def show_processors():
     """Show installed stac-repository processors.
     """
-    for processor in discovered_processors.keys():
-        print(f"{processor} version={discovered_processors[processor].__version__}")
+
+    print_list([
+        f"{processor} version={discovered_processors[processor].__version__}"
+        for processor in discovered_processors.keys()
+    ])
 
 
 @app.command()
@@ -211,10 +216,8 @@ def ingest(
     """
     stac_repository = load_repository(backend, repository)
 
-    console = rich.get_console()
-
     try:
-        print_jobs(
+        print_reports(
             stac_repository.ingest(
                 *sources,
                 processor_id=processor,
@@ -223,8 +226,7 @@ def ingest(
             operation_name="Ingestion [{0}] {1}".format(
                 processor,
                 sources
-            ),
-            console=console
+            )
         )
     except (
         ProcessorNotFoundError,
@@ -233,11 +235,11 @@ def ingest(
         ParentNotFoundError,
         ParentCatalogError
     ) as error:
-        print_error(error, from_error=error)
+        print_error(error, error=error)
         raise typer.Exit(1)
     except ProcessingErrors as errors:
-        print_error(f"Errors encountered : ")
-        print_error(errors, short_error=(
+        print(f"\nErrors : \n")
+        print_error(errors, no_traceback=(
             ProcessorNotFoundError,
             ProcessingError,
             StacObjectError,
@@ -247,23 +249,37 @@ def ingest(
         raise typer.Exit(1)
 
 
-# @app.command()
-# def prune(
-#     product_ids: list[str],
-#     config: str = "stac_repository.toml",
-#     git: bool = True,
-# ):
-#     """Remove products from the catalog.
-#     """
-#     stac_repository = load_repository(config, mock=not git)
+@app.command()
+def prune(
+    repository: Annotated[
+        str,
+        typer.Argument(help="Repository URI. Interpreted by the chosen backend.")
+    ],
+    product_ids: list[str],
+    backend: Optional[str] = "file",
+):
+    """Remove products from the catalog.
+    """
+    stac_repository = load_repository(backend, repository)
 
-#     console = rich.get_console()
-
-#     print_jobs(
-#         stac_repository.prune(*product_ids),
-#         operation_name="Deletion",
-#         console=console
-#     )
+    try:
+        print_reports(
+            stac_repository.prune(*product_ids),
+            operation_name="Deletion"
+        )
+    except (
+        RootUncatalogError,
+        StacObjectError
+    ) as error:
+        print_error(error, error=error)
+        raise typer.Exit(1)
+    except ProcessingErrors as errors:
+        print(f"\nErrors : \n")
+        print_error(errors, no_traceback=(
+            RootUncatalogError,
+            StacObjectError,
+        ))
+        raise typer.Exit(1)
 
 
 # @app.command()
@@ -319,10 +335,10 @@ def rollback(
     try:
         commit = stac_repository.get_commit(ref)
     except CommitNotFoundError as error:
-        print_error(f"No commit found matching {ref}.", from_error=error)
+        print_error(f"No commit found matching {ref}.", error=error)
         raise typer.Exit(1)
     except RefTypeError as error:
-        print_error(f"Bad --ref option : {str(error)}.", from_error=error)
+        print_error(f"Bad --ref option : {str(error)}.", error=error)
         raise typer.Exit(1)
 
     if commit.rollback() == NotImplemented:
@@ -362,10 +378,10 @@ def backup(
         try:
             commit = stac_repository.get_commit(ref)
         except CommitNotFoundError as error:
-            print_error(f"No commit found matching {ref}.", from_error=error)
+            print_error(f"No commit found matching {ref}.", error=error)
             raise typer.Exit(1)
         except RefTypeError as error:
-            print_error(f"Bad --ref option : {str(error)}.", from_error=error)
+            print_error(f"Bad --ref option : {str(error)}.", error=error)
             raise typer.Exit(1)
     else:
         commit = next(stac_repository.commits)
@@ -375,5 +391,5 @@ def backup(
             print_error(f"Backend {backend} does not support backups.")
             raise typer.Exit(1)
     except BackupValueError as error:
-        print_error(f"Bad --backup option : {str(error)}.", from_error=error)
+        print_error(f"Bad --backup option : {str(error)}.", error=error)
         raise typer.Exit(1)

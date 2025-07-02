@@ -5,15 +5,21 @@ from typing import (
     List,
     TypeAlias,
     Callable,
-    NamedTuple
+    NamedTuple,
+    Any
 )
 
 from collections import deque
 import datetime
 import urllib.parse
 import shapely
+import orjson
 
 import pystac
+from pystac.stac_io import (
+    StacIO,
+    DefaultStacIO
+)
 
 
 def is_href_file(href: str):
@@ -50,7 +56,39 @@ class StacObjectError(ValueError):
     ...
 
 
-def make_from_file(file: str) -> pystac.Catalog | pystac.Collection | pystac.Item:
+def make_from_str(obj_str: str) -> pystac.Catalog | pystac.Collection | pystac.Item:
+    """Makes a pystac STAC object from its string json representation
+
+    Raises:
+        StacObjectError: Not a STAC object
+    """
+    try:
+        obj_json = orjson.loads(obj_str)
+    except Exception:
+        raise StacObjectError(f"{obj_str} is not a JSON object")
+    else:
+        return make_from_dict(obj_json)
+
+
+def make_from_dict(obj_json: Any) -> pystac.Catalog | pystac.Collection | pystac.Item:
+    """Makes a pystac STAC object from its dictionary (json) representation
+
+    Raises:
+        StacObjectError: Not a STAC object
+    """
+    for cls in (pystac.Catalog, pystac.Collection, pystac.Item):
+        try:
+            return cls.from_dict(obj_json)
+        except pystac.STACTypeError:
+            pass
+
+    raise StacObjectError(f"{str(obj_json)} is not a STAC object")
+
+
+def make_from_file(
+    file: str,
+    stac_io: StacIO = DefaultStacIO()
+) -> pystac.Catalog | pystac.Collection | pystac.Item:
     """Makes a pystac STAC object from its href
 
     Raises:
@@ -58,7 +96,7 @@ def make_from_file(file: str) -> pystac.Catalog | pystac.Collection | pystac.Ite
     """
     for cls in (pystac.Catalog, pystac.Collection, pystac.Item):
         try:
-            return cls.from_file(file)
+            return cls.from_file(file, stac_io=stac_io)
         except pystac.STACTypeError:
             pass
 
@@ -79,7 +117,7 @@ class WalkedStacObject(NamedTuple):
 def _resolve(
     obj: Optional[pystac.Item | pystac.Collection | pystac.Catalog] = None,
     href: Optional[str] = None,
-    factory: StacObjectFactory = make_from_file,
+    stac_io: StacIO = DefaultStacIO(),
 ) -> ResolvedStacObject:
     """Resolve a STAC object or STAC object href
 
@@ -92,7 +130,7 @@ def _resolve(
     if href is None:
         return ResolvedStacObject(obj.self_href, obj)
     elif obj is None:
-        return ResolvedStacObject(href, factory(href))
+        return ResolvedStacObject(href, make_from_file(href, stac_io=stac_io))
     else:
         return ResolvedStacObject(href, obj)
 
@@ -101,10 +139,10 @@ def walk_children(
     *,
     obj: Optional[pystac.Item | pystac.Collection | pystac.Catalog] = None,
     href: Optional[str] = None,
-    factory: StacObjectFactory = make_from_file,
+    stac_io: StacIO = DefaultStacIO(),
     domain: Optional[str] = None,
 ) -> Iterator[ResolvedStacObject]:
-    (href, obj) = _resolve(obj=obj, href=href, factory=factory)
+    (href, obj) = _resolve(obj=obj, href=href, stac_io=stac_io)
 
     for link in obj.links:
         if link.rel not in ["item", "child"]:
@@ -115,19 +153,19 @@ def walk_children(
         if domain is not None and not child_href.startswith(domain):
             continue
 
-        yield ResolvedStacObject(child_href, factory(child_href))
+        yield ResolvedStacObject(child_href, make_from_file(child_href, stac_io=stac_io))
 
 
 def walk_all_children(
     *,
     obj: Optional[pystac.Item | pystac.Collection | pystac.Catalog] = None,
     href: Optional[str] = None,
-    factory: StacObjectFactory = make_from_file,
+    stac_io: StacIO = DefaultStacIO(),
     domain: Optional[str] = None,
 ) -> Iterator[WalkedStacObject]:
-    (href, obj) = _resolve(obj=obj, href=href, factory=factory)
+    (href, obj) = _resolve(obj=obj, href=href, stac_io=stac_io)
 
-    ancestry = ResolvedStacObject(href, obj)
+    parent = ResolvedStacObject(href, obj)
 
     for link in obj.links:
         if link.rel in ["item", "child"]:
@@ -136,12 +174,12 @@ def walk_all_children(
             if domain is not None and not child_href.startswith(domain):
                 continue
 
-            yield WalkedStacObject(child_href, child := factory(child_href), ancestry)
+            yield WalkedStacObject(child_href, child := make_from_file(child_href, stac_io=stac_io), [parent])
 
             if link.rel == "child":
 
-                for grand_child in walk_all_children(obj=child, factory=factory, domain=domain, href=child_href):
-                    grand_child.ancestry.append(ancestry)
+                for grand_child in walk_all_children(obj=child, stac_io=stac_io, domain=domain, href=child_href):
+                    grand_child.ancestry.append(parent)
                     yield grand_child
 
 
@@ -154,7 +192,7 @@ def get_child(
     obj: Optional[pystac.Item | pystac.Collection | pystac.Catalog] = None,
     href: Optional[str] = None,
     id: str,
-    factory: StacObjectFactory = make_from_file,
+    stac_io: StacIO = DefaultStacIO(),
     domain: Optional[str] = None,
 ) -> WalkedStacObject:
     """Searches the descendants of a STAC object.
@@ -162,9 +200,9 @@ def get_child(
     Raises:
         ObjectNotFoundError: If the object `id` cannot be found in the catalog
     """
-    (href, obj) = _resolve(obj=obj, href=href, factory=factory)
+    (href, obj) = _resolve(obj=obj, href=href, stac_io=stac_io)
 
-    for child in walk_all_children(obj=obj, factory=factory, domain=domain, href=href):
+    for child in walk_all_children(obj=obj, stac_io=stac_io, domain=domain, href=href):
         if child.object.id == id:
             return child
 
@@ -175,7 +213,7 @@ def get_extent(
     *,
     obj: Optional[pystac.Item | pystac.Collection | pystac.Catalog] = None,
     href: Optional[str] = None,
-    factory: StacObjectFactory = make_from_file,
+    stac_io: StacIO = DefaultStacIO(),
     domain: Optional[str] = None,
 ) -> pystac.Extent | None:
     """Get (or compute) a STAC object extent. Returns None without raising on (and only on) empty catalogs.
@@ -183,7 +221,7 @@ def get_extent(
     Raises:
         StacObjectError: If the object geospatial properties are not valid
     """
-    (href, obj) = _resolve(obj=obj, href=href, factory=factory)
+    (href, obj) = _resolve(obj=obj, href=href, stac_io=stac_io)
 
     if isinstance(obj, pystac.Item):
         bbox: Tuple[float, float, float, float]
@@ -210,14 +248,14 @@ def get_extent(
     elif isinstance(obj, pystac.Collection):
         return obj.extent.clone()
     else:
-        return compute_extent(obj=obj, factory=factory, domain=domain, href=href)
+        return compute_extent(obj=obj, stac_io=stac_io, domain=domain, href=href)
 
 
 def compute_extent(
     *,
     obj: Optional[pystac.Item | pystac.Collection | pystac.Catalog] = None,
     href: Optional[str] = None,
-    factory: StacObjectFactory = make_from_file,
+    stac_io: StacIO = DefaultStacIO(),
     domain: Optional[str] = None,
 ) -> pystac.Extent | None:
     """Computes a STAC object extent. Returns None without raising on (and only on) empty catalogs.
@@ -226,10 +264,10 @@ def compute_extent(
         StacObjectError: If the object geospatial properties are not valid
     """
 
-    (href, obj) = _resolve(obj=obj, href=href, factory=factory)
+    (href, obj) = _resolve(obj=obj, href=href, stac_io=stac_io)
 
     if isinstance(obj, pystac.Item):
-        return get_extent(obj=obj, factory=factory, domain=domain, href=href)
+        return get_extent(obj=obj, stac_io=stac_io, domain=domain, href=href)
 
     is_empty = True
 
@@ -247,8 +285,8 @@ def compute_extent(
     bboxes = deque()
     datetimess = deque()
 
-    for child in walk_children(obj=obj, factory=factory, domain=domain, href=href):
-        child_extent = get_extent(obj=child.object, factory=factory, domain=domain, href=child.href)
+    for child in walk_children(obj=obj, stac_io=stac_io, domain=domain, href=href):
+        child_extent = get_extent(obj=child.object, stac_io=stac_io, domain=domain, href=child.href)
 
         if child_extent is None:
             continue
@@ -282,3 +320,11 @@ def compute_extent(
         pystac.SpatialExtent(list(bboxes)),
         pystac.TemporalExtent(list(datetimess))
     )
+
+
+def unlink_from_catalog(obj):
+    ...
+
+
+def link_to_catalog(obj, parent):
+    ...

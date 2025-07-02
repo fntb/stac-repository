@@ -7,6 +7,7 @@ from os import PathLike
 import mimetypes
 import urllib.parse
 import hashlib
+import uuid
 
 import pystac
 
@@ -74,15 +75,16 @@ class NoneProcessor:
             )
         except VersionNotFoundError as error:
 
-            product_hash = hashlib.md5()
+            # product_hash = hashlib.md5()
 
-            for file in _walk_stac_object_links(product_source):
-                if _is_href_file(file):
-                    with open(file, "rb") as file_pipe:
-                        while file_chunk := file_pipe.read(48_000):
-                            product_hash.update(file_chunk)
+            # for file in _walk_stac_object_links(product_source):
+            #     if _is_href_file(file):
+            #         with open(file, "rb") as file_pipe:
+            #             while file_chunk := file_pipe.read(65_536):
+            #                 product_hash.update(file_chunk)
 
-            return product_hash.hexdigest()
+            # return product_hash.hexdigest()
+            return uuid.uuid4().hex
 
     @staticmethod
     def process(product_source: str) -> PathLike[str]:

@@ -36,14 +36,12 @@ class FileStacCommit(BaseStacCommit):
     def message(self) -> None:
         return None
 
-    def get(self, href: str) -> pystac.Item | pystac.Catalog:
-        for cls in (pystac.Item, pystac.Collection, pystac.Catalog):
-            try:
-                return cls.from_file(href)
-            except pystac.STACTypeError:
-                pass
+    def get(self, href: str) -> str:
+        with open(href, "r") as stream:
+            return stream.read()
 
-        raise ValueError(f"{href} is not a valid STAC object")
+    def get_asset(self, href: str):
+        return open(href, "rb")
 
     def rollback(self) -> NotImplementedType:
         return NotImplemented

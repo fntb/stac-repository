@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import (
     Iterator,
     Optional,
@@ -33,7 +35,8 @@ from .base_stac_transaction import (
     StacObjectError,
     ParentCatalogError,
     RootUncatalogError,
-    ParentNotFoundError
+    ParentNotFoundError,
+    ObjectNotFoundError
 )
 
 from .stac_catalog import (
@@ -258,7 +261,7 @@ class BaseStacRepository(metaclass=ABCMeta):
 
         for source in sources:
             reporter = JobReportBuilder(source)
-            yield reporter.progress(f"Discovering source {source}")
+            yield reporter.progress(f"Discovering products from {source}")
 
             try:
                 discovered_product_sources = list(processor.discover(source))
@@ -270,7 +273,10 @@ class BaseStacRepository(metaclass=ABCMeta):
                     yield reporter.fail(error)
                     errors[f"source={source}"] = error
             else:
-                yield reporter.complete(f"Discovered sources : {', '.join(discovered_product_sources)}")
+                if discovered_product_sources:
+                    yield reporter.complete(f"Discovered products {' '.join(discovered_product_sources)}")
+                else:
+                    yield reporter.complete(f"No products discovered")
 
         with transaction_cls(self).context(
             message=f"{processor_id} ingestion : \n\n - " + "\n - ".join(product_sources)
@@ -334,9 +340,12 @@ class BaseStacRepository(metaclass=ABCMeta):
                 try:
                     yield reporter.progress("Uncataloging")
 
-                    transaction.uncatalog(product_id)
-
-                    yield reporter.complete("Uncataloged")
+                    try:
+                        transaction.uncatalog(product_id)
+                    except ObjectNotFoundError:
+                        yield reporter.complete("Not found in catalog")
+                    else:
+                        yield reporter.complete("Uncataloged")
                 except Exception as error:
                     yield reporter.fail(error)
 
@@ -358,4 +367,11 @@ class BaseStacRepository(metaclass=ABCMeta):
             Dict[str, Exception]: Map of ids to Exceptions (any of the above)
         """
         # This method is just a wrapper for concrete implementations to call _prune() with the proper StacTransaction type
+        raise NotImplementedError
+
+    def export(
+        self,
+        cls: Optional[BaseStacRepository] = None
+    ):
+        """Exports the catalog to another backend or the filesystem."""
         raise NotImplementedError
