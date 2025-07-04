@@ -3,6 +3,7 @@ from typing import (
     Dict,
     Optional,
     Type,
+    Any
 )
 
 from types import (
@@ -10,43 +11,20 @@ from types import (
 )
 
 import os
-import logging
 import datetime
 import io
-import orjson
 from abc import abstractmethod, ABCMeta
 
-import pystac
-import pystac.stac_io
-
-from .stac_catalog import (
-    get_child as _get_child,
-    ObjectNotFoundError as _ObjectNotFoundError,
-    make_from_str as _make_from_str
+from .stac import (
+    search,
+    Item,
+    Collection,
+    Catalog
 )
 
 
 class BackupValueError(ValueError):
     ...
-
-
-class CommitStacIOWriteAttemptError(NotImplementedError):
-    ...
-
-
-class CommitStacIO(pystac.stac_io.DefaultStacIO):
-
-    _commit: BaseStacCommit
-
-    def __init__(self, *args: pystac.Any, commit: BaseStacCommit, **kwargs: pystac.Any):
-        super().__init__(*args, **kwargs)
-        self._commit = commit
-
-    def read_text_from_href(self, href: str) -> str:
-        return self._commit.get(href)
-
-    def write_text_to_href(self, href: str, txt: str) -> None:
-        raise CommitStacIOWriteAttemptError
 
 
 class BaseStacCommit(metaclass=ABCMeta):
@@ -73,16 +51,12 @@ class BaseStacCommit(metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    def get(self, href: str) -> str:
+    def get(self, href: str) -> Any:
         raise NotImplementedError
 
     @abstractmethod
-    def get_asset(self, href: str) -> io.BytesIO:
+    def get_asset(self, href: str) -> io.RawIOBase | io.BufferedIOBase:
         raise NotImplementedError
-
-    @property
-    def io(self) -> CommitStacIO:
-        return CommitStacIO(commit=self)
 
     @abstractmethod
     def rollback(self) -> Optional[NotImplementedType]:
@@ -108,18 +82,15 @@ class BaseStacCommit(metaclass=ABCMeta):
     def search(
         self,
         id: str
-    ) -> pystac.Item | pystac.Collection | pystac.Catalog | None:
+    ) -> Item | Collection | Catalog | None:
         """Searches the object with `id` in the commit catalog.
         """
-        try:
-            return _get_child(
-                id=id,
-                href=self._root_catalog_href,
-                stac_io=self.io,
-                domain=os.path.dirname(self._root_catalog_href)
-            ).object
-        except _ObjectNotFoundError:
-            return None
+        return search(
+            self._root_catalog_href,
+            id=id,
+            scope=os.path.dirname(self._root_catalog_href),
+            store=self
+        )
 
     def describe(self):
         raise NotImplementedError

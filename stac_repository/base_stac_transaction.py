@@ -21,15 +21,27 @@ import json
 
 from .base_stac_commit import BaseStacCommit
 
-from .stac_catalog import (
-    get_child as _get_child,
-    WalkedStacObject,
-    ObjectNotFoundError,
-    compute_extent as _compute_extent,
-    is_href_file as _is_href_file,
-    StacObjectError,
-    make_from_file as _make_from_file
+from .stac import (
+    Item,
+    Collection,
+    Catalog,
+    Link,
+    Asset,
+    MimeTypes,
+    load,
+    load_parent,
+    save,
+    delete,
+    search,
+    compute_extent,
+    is_in_scope,
+    urlparse,
+    urljoin
 )
+
+
+class ObjectNotFoundError(FileNotFoundError):
+    ...
 
 
 class ParentNotFoundError(ObjectNotFoundError):
@@ -106,121 +118,148 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
         product_file: str,
         parent_id: Optional[str] = None,
     ):
-        """Catalogs a product.
+        catalog_scope = os.path.dirname(self._root_catalog_href)
 
-        Raises:
-            StacObjectError: The product is not a valid Item or Collection, or cannot compute the parent new extent
-            ParentNotFoundError
-            ParentCatalogError: The parent is an Item
-        """
-        product: pystac.Item | pystac.Collection | None = None
+        product = load(
+            product_file,
+            recursive=True,
+            scope=os.path.dirname(product_file)
+        )
 
-        for cls in (pystac.Item, pystac.Collection):
-            try:
-                product = cls.from_file(product_file)
-            except pystac.STACTypeError:
-                pass
-
-        if product is None:
-            raise StacObjectError(f"{product_file} is not a valid STAC Item or Collection")
+        product.links = [
+            link
+            for link in product.links
+            if link.rel not in ("parent", "root", "self")
+        ]
 
         if parent_id is None:
-            (parent_href, parent, ancestry) = WalkedStacObject(
+            parent = load(
                 self._root_catalog_href,
-                _make_from_file(self._root_catalog_href, self.io),
-                []
+                store=self
             )
         else:
-            try:
-                (parent_href, parent, ancestry) = _get_child(
-                    id=parent_id,
-                    href=self._root_catalog_href,
-                    stac_io=self.io,
-                    domain=os.path.dirname(self._root_catalog_href)
-                )
-            except ObjectNotFoundError as error:
-                raise ParentNotFoundError(f"Parent {parent_id} not found in catalog") from error
+            parent = search(
+                self._root_catalog_href,
+                id=parent_id,
+                scope=catalog_scope,
+                store=self
+            )
 
-        if isinstance(parent, pystac.Item):
+        if parent is None:
+            raise ParentNotFoundError(f"Parent {parent_id} not found in catalog")
+
+        if isinstance(parent, Item):
             raise ParentCatalogError(f"Cannot catalog under {parent_id}, this is an Item")
 
-        # Uncatalog the old version of the product, if any
         try:
             self.uncatalog(product.id)
         except ObjectNotFoundError:
             pass
 
-        # Separate product from its ascendants, if any
-        product.set_parent(None)
-        product.set_root(None)
-
-        # Resolve descendants (and only descendants) into memory
-        # Preserve the assets absolute hrefs
-        product.resolve_links()
-        if isinstance(product, pystac.Item):
-            product.make_asset_hrefs_absolute()
+        product_link_href: str
+        product_link_rel: str
+        if isinstance(product, Item):
+            product_link_href = urljoin(product.id, f"{product.id}.json")
+            product_link_rel = "item"
+        elif isinstance(product, Collection):
+            product_link_href = urljoin(product.id, "collection.json")
+            product_link_rel = "child"
         else:
-            product.make_all_asset_hrefs_absolute()
+            product_link_href = urljoin(product.id, "catalog.json")
+            product_link_rel = "child"
 
-        # Join product to the catalog (parent and root) and normalize all descendants hrefs
-        if not isinstance(product, pystac.Item):
-            parent.add_child(
-                product,
-                title=product.title,
-                set_parent=True
-            )
+        for link in parent.links:
+            if link.href == product_link_href:
+                break
         else:
-            parent.add_item(
-                product,
-                product.common_metadata.title,
-                set_parent=True
+            parent.links.append(Link(
+                href=product_link_href,
+                rel=product_link_rel,
+                type=MimeTypes.json,
+                _target=product
+            ))
+
+        parent_link_href: str
+        if isinstance(parent, Collection):
+            parent_link_href = urljoin("..", "collection.json")
+        else:
+            parent_link_href = urljoin("..", "catalog.json")
+
+        product.links.append(Link(
+            href=parent_link_href,
+            rel="parent",
+            type=MimeTypes.json,
+        ))
+
+        def normalize_link(link: Link) -> Link | None:
+            if link.rel in ["self", "alternate"]:
+                return None
+
+            if link.rel not in ["child", "item"]:
+                return link
+
+            if link.target is None:
+                return link
+
+            child = link.target
+
+            if isinstance(child, Item):
+                link.href = os.path.join(child.id, f"{child.id}.json")
+            elif isinstance(child, Collection):
+                link.href = os.path.join(child.id, f"collection.json")
+            else:
+                link.href = os.path.join(child.id, f"catalog.json")
+
+            normalize(child)
+
+            return link
+
+        def normalize_asset(asset: Asset) -> Asset | None:
+            if is_in_scope(asset.href, scope=catalog_scope):
+                asset.target = asset.href
+                asset.href = os.path.basename(urlparse(asset.href).path)
+
+            return asset
+
+        def normalize(stac_object: Item | Collection | Catalog):
+            stac_object.links = [
+                normalized_link
+                for link in stac_object.links
+                if (normalized_link := normalize_link(link)) is not None
+            ]
+
+            if isinstance(stac_object, (Item, Collection)) and stac_object.assets:
+                stac_object.assets = {
+                    key: normalized_asset
+                    for (key, asset) in stac_object.assets.items()
+                    if (normalized_asset := normalize_asset(asset)) is not None
+                }
+
+            for link in stac_object.links:
+                if link.target is not None:
+                    link.target.target = urljoin(stac_object.target, link.href)
+
+                    normalize(link.target)
+
+        normalize(parent)
+
+        while True:
+            parent.extent = compute_extent(parent, scope=catalog_scope, store=self)
+
+            grand_parent = load_parent(
+                parent,
+                store=self
             )
 
-        # Compute the parent new extent and summary
-        # TODO : Recompute each ancestor instead
-        if isinstance(parent, pystac.Collection):
-            parent.extent = _compute_extent(obj=parent, href=parent_href, stac_io=self.io)
+            if grand_parent is None:
+                break
+            else:
+                parent = grand_parent
 
-        # Save the parent
-        # TODO : Save each ancestor instead
-        parent.normalize_and_save(
-            self._root_catalog_href,
-            strategy=pystac.layout.BestPracticesLayoutStrategy(),
-            catalog_type=pystac.CatalogType.SELF_CONTAINED,
-            stac_io=self.io,
-            skip_unresolved=True
+        save(
+            parent,
+            store=self
         )
-
-        # Recursively save the product assets
-        def save_assets(obj: pystac.Item | pystac.Collection | pystac.Catalog):
-            # identify local assets and copy them into the catalog while updating the node asset href
-            if isinstance(obj, (pystac.Item, pystac.Collection)):
-                for asset in obj.assets.values():
-                    if _is_href_file(asset.href):
-                        relative_cataloged_asset_href = os.path.basename(asset.href)
-                        absolute_cataloged_asset_href = os.path.join(
-                            os.path.dirname(asset.owner.self_href),
-                            relative_cataloged_asset_href
-                        )
-
-                        with open(asset.href, "rb") as asset_stream:
-                            self.set_asset(absolute_cataloged_asset_href, asset_stream)
-
-                        asset.href = relative_cataloged_asset_href
-
-            if isinstance(obj, (pystac.Catalog, pystac.Collection)):
-                for child in obj.get_children():
-                    save_assets(child)
-                for item in obj.get_items():
-                    save_assets(item)
-
-        save_assets(product)
-
-        # Save the modified asset links
-        if isinstance(product, pystac.Item):
-            product.save_object(stac_io=self.io, include_self_link=False)
-        else:
-            product.save(stac_io=self.io)
 
     def uncatalog(
         self,
@@ -231,26 +270,51 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
         Raises:
             RootUncatalogError: The product is the catalog root
             StacObjectError: Cannot compute the parent new extent
+            ObjectNotFoundError
         """
-        (product_href, product, ancestry) = _get_child(
-            id=product_id,
-            href=self._root_catalog_href,
-            stac_io=self.io,
-            domain=os.path.dirname(self._root_catalog_href)
+
+        catalog_scope = os.path.dirname(self._root_catalog_href)
+
+        product = search(
+            self._root_catalog_href,
+            product_id,
+            scope=catalog_scope,
+            store=self
         )
 
-        if not ancestry:
+        if product is None:
+            raise ObjectNotFoundError(f"Product {product_id} not found in catalog")
+
+        for link in product.links:
+            if link.rel == "parent":
+                parent_link = link
+                break
+        else:
             raise RootUncatalogError(f"Cannot uncatalog the root")
 
-        self.unset(product_href)
+        parent = load(
+            parent_link.href,
+            store=self
+        )
 
-        (parent_href, parent) = ancestry[0]
-        if isinstance(product, pystac.Item):
-            parent.remove_item(product_id)
-        else:
-            parent.remove_child(product_id)
+        parent.links = [link for link in parent.links if link.href != product.target]
 
-        if isinstance(parent, pystac.Collection):
-            parent.extent = _compute_extent(obj=parent, href=parent_href, stac_io=self.io)
+        delete(product, scope=catalog_scope, store=self)
 
-        parent.save(stac_io=self.io)
+        while True:
+            parent.extent = compute_extent(parent, scope=catalog_scope, store=self)
+
+            grand_parent = load_parent(
+                parent,
+                store=self
+            )
+
+            if grand_parent is None:
+                break
+            else:
+                parent = grand_parent
+
+        save(
+            parent,
+            store=self
+        )

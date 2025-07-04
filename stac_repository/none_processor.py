@@ -5,33 +5,15 @@ from typing import (
 import os
 from os import PathLike
 import mimetypes
-import urllib.parse
-import hashlib
 import uuid
 
-import pystac
 
-
-from .stac_catalog import (
-    make_from_file as _make_from_file,
-    is_href_file as _is_href_file,
-    get_version as _get_version,
-    VersionNotFoundError
+from .stac import (
+    load,
+    get_version,
+    VersionNotFoundError,
+    StacObjectError
 )
-
-
-def _walk_stac_object_links(href: str) -> Iterator[str]:
-    obj = _make_from_file(href)
-
-    yield href
-
-    if isinstance(obj, (pystac.Item, pystac.Collection)):
-        for asset in obj.assets.values():
-            yield urllib.parse.urljoin(href, asset.href)
-
-    for link in obj.links:
-        if link.rel in ["item", "child"]:
-            yield from _walk_stac_object_links(urllib.parse.urljoin(href, link.href))
 
 
 class NoneProcessor:
@@ -45,14 +27,16 @@ class NoneProcessor:
                 return False
 
             try:
-                _make_from_file(file)
-            except ValueError:
+                load(file)
+            except StacObjectError:
                 return False
 
             return True
 
         if not os.path.lexists(source):
             return
+
+        source = os.path.abspath(source)
 
         if os.path.isdir(source):
             for file_name in os.listdir(source):
@@ -65,27 +49,15 @@ class NoneProcessor:
 
     @staticmethod
     def id(product_source: str) -> str:
-        return pystac.STACObject.from_file(product_source).id
+        return load(product_source).id
 
     @staticmethod
     def version(product_source: str) -> str:
         try:
-            return _get_version(
-                pystac.STACObject.from_file(product_source)
-            )
+            return get_version(load(product_source))
         except VersionNotFoundError as error:
-
-            # product_hash = hashlib.md5()
-
-            # for file in _walk_stac_object_links(product_source):
-            #     if _is_href_file(file):
-            #         with open(file, "rb") as file_pipe:
-            #             while file_chunk := file_pipe.read(65_536):
-            #                 product_hash.update(file_chunk)
-
-            # return product_hash.hexdigest()
             return uuid.uuid4().hex
 
     @staticmethod
     def process(product_source: str) -> PathLike[str]:
-        return product_source
+        return os.path.abspath(product_source)

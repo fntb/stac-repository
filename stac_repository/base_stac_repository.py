@@ -39,7 +39,7 @@ from .base_stac_transaction import (
     ObjectNotFoundError
 )
 
-from .stac_catalog import (
+from .stac import (
     get_version as _get_version,
     VersionNotFoundError as _VersionNotFoundError
 )
@@ -210,9 +210,11 @@ class BaseStacRepository(metaclass=ABCMeta):
                     if product_version == _get_version(cataloged_stac_object):
                         raise SkipIteration
                 except _VersionNotFoundError as error:
-                    raise NotImplementedError from error
-
-            yield reporter.progress("Processing")
+                    yield reporter.progress("Product found but unversionned, reprocessing")
+                else:
+                    yield reporter.progress("Previous version of the product found, reprocessing")
+            else:
+                yield reporter.progress("Product not found, processing")
 
             try:
                 processed_stac_object_file = processor.process(product_source)
