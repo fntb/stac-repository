@@ -14,10 +14,13 @@ from abc import (
 )
 
 import datetime
-import pystac
 
 
 from .__about__ import __name_public__, __version__
+
+from .stac import (
+    Catalog
+)
 
 from .base_stac_commit import BaseStacCommit
 
@@ -109,7 +112,7 @@ class BaseStacRepository(metaclass=ABCMeta):
     def init(
         cls: Type[_Self],
         repository: str,
-        root_catalog: pystac.Catalog,
+        root_catalog: Catalog,
     ) -> _Self:
         """Create a new repository.
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from typing import (
-    Optional
+    Optional,
+    Any
 )
 
 from abc import (
@@ -13,11 +14,6 @@ import contextlib
 import os
 import io
 
-import pystac
-import pystac.layout
-import pystac.stac_io
-
-import json
 
 from .base_stac_commit import BaseStacCommit
 
@@ -56,21 +52,6 @@ class RootUncatalogError(ValueError):
     pass
 
 
-class TransactionStacIO(pystac.stac_io.DefaultStacIO):
-
-    _transaction: BaseStacTransaction
-
-    def __init__(self, *args: pystac.Any, transaction: BaseStacTransaction, **kwargs: pystac.Any):
-        super().__init__(*args, **kwargs)
-        self._transaction = transaction
-
-    def read_text_from_href(self, href: str) -> str:
-        return self._transaction.get(href)
-
-    def write_text_to_href(self, href: str, txt: str) -> None:
-        return self._transaction.set(href, txt)
-
-
 class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
 
     @contextlib.contextmanager
@@ -87,21 +68,17 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
             raise error
 
     @abstractmethod
-    def set(self, href: str, value: str):
+    def set(self, href: str, value: Any):
         raise NotImplementedError
 
     @abstractmethod
-    def set_asset(self, href: str, asset: io.BytesIO | io.StringIO | bytes | str):
+    def set_asset(self, href: str, asset: io.RawIOBase | io.BufferedIOBase):
         raise NotImplementedError
 
     @abstractmethod
     def unset(self, href: str):
         """Delete the STAC object at href, all its descendants, and all their assets"""
         raise NotImplementedError
-
-    @property
-    def io(self) -> TransactionStacIO:
-        return TransactionStacIO(transaction=self)
 
     @abstractmethod
     def abort(self):

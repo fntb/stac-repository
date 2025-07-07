@@ -1,5 +1,5 @@
 from typing import (
-    Dict
+    Any
 )
 
 from types import (
@@ -7,11 +7,10 @@ from types import (
 )
 
 import os
+import orjson
 import datetime
 import urllib.parse
 import shutil
-
-import pystac
 
 from stac_repository.base_stac_commit import (
     BaseStacCommit,
@@ -37,8 +36,10 @@ class FileStacCommit(BaseStacCommit):
         return None
 
     def get(self, href: str) -> str:
-        with open(href, "r") as stream:
-            return stream.read()
+        with open(href, "rb") as stream:
+            stac_object_s = stream.read()
+
+        return orjson.loads(stac_object_s)
 
     def get_asset(self, href: str):
         return open(href, "rb")

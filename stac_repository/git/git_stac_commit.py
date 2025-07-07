@@ -3,11 +3,8 @@ from functools import cached_property
 import hashlib
 import datetime
 
-import pystac
-
 from ..lib.cache import CacheMeta
 from ..lib.git import Commit
-from ..lib.git_stac_io import GitCommitStacIO
 from ..base_stac_commit import BaseStacCommit
 
 

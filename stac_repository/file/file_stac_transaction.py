@@ -1,13 +1,12 @@
 from typing import (
-    Dict
+    Any
 )
 
 import os
 import io
 import shutil
-import orjson
-import pystac
 import glob
+import orjson
 
 from stac_repository.base_stac_transaction import BaseStacTransaction
 from stac_repository.base_stac_repository import BaseStacRepository
@@ -82,23 +81,19 @@ class FileStacTransaction(FileStacCommit, BaseStacTransaction):
         self._remove_empty_directories()
         self._unlock()
 
-    def set(self, href: str, value: str):
-        # obj_json = value.to_dict(include_self_link=False, transform_hrefs=False)
-        # obj_s = orjson.dumps(obj_json)
+    def set(self, href: str, value: Any):
+        stac_object_s = orjson.dumps(value)
 
         os.makedirs(os.path.dirname(href), exist_ok=True)
 
-        with open(f"{href}.tmp", "w") as file:
-            file.write(value)
+        with open(f"{href}.tmp", "wb") as file:
+            file.write(stac_object_s)
 
     def unset(self, href: str):
         dir = os.path.dirname(href)
         os.rename(dir, f"{dir}.bck")
 
-    def set_asset(self, href: str, asset: io.BytesIO | bytes):
+    def set_asset(self, href: str, asset: io.RawIOBase | io.BufferedIOBase):
         with open(f"{href}.tmp", "wb") as asset_file:
-            if isinstance(asset, bytes):
-                asset_file.write(asset)
-            else:
-                while (asset_chunk := asset.read(50_000)):
-                    asset_file.write(asset_chunk)
+            while (asset_chunk := asset.read(65_536)):
+                asset_file.write(asset_chunk)

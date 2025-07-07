@@ -6,12 +6,15 @@ from typing import (
 import os
 from os import path
 
-import pystac
-
 from stac_repository.base_stac_repository import (
     BaseStacRepository,
     RepositoryAlreadyInitializedError,
     RepositoryNotFoundError,
+)
+
+from stac_repository.stac import (
+    Catalog,
+    save
 )
 
 from .file_stac_commit import FileStacCommit
@@ -27,7 +30,7 @@ class FileStacRepository(BaseStacRepository):
     def init(
         cls,
         repository: str,
-        root_catalog: pystac.Catalog,
+        root_catalog: Catalog,
     ):
         repository_dir = path.abspath(repository)
 
@@ -37,10 +40,8 @@ class FileStacRepository(BaseStacRepository):
         if os.listdir(repository_dir):
             raise RepositoryAlreadyInitializedError(f"Repository {repository_dir} is not empty")
 
-        root_catalog.set_self_href(path.join(repository_dir, "catalog.json"))
-        root_catalog.save(
-            catalog_type=pystac.CatalogType.SELF_CONTAINED,
-        )
+        root_catalog.target = os.path.join(repository_dir, "catalog.json")
+        save(root_catalog)
 
         return cls(repository_dir)
 
