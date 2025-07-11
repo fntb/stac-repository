@@ -6,14 +6,26 @@ from typing import (
     TypeVar,
     Type,
     List,
-    Dict
+    Dict,
+    Any
 )
+
+from types import (
+    NotImplementedType
+)
+
 from abc import (
     abstractmethod,
     ABCMeta
 )
 
 import datetime
+
+from pydantic import (
+    BaseModel,
+    TypeAdapter,
+    ValidationError
+)
 
 
 from .__about__ import __name_public__, __version__
@@ -38,6 +50,7 @@ from .base_stac_transaction import (
     StacObjectError,
     ParentCatalogError,
     RootUncatalogError,
+    RootCatalogError,
     ParentNotFoundError,
     ObjectNotFoundError
 )
@@ -61,6 +74,10 @@ class CommitNotFoundError(ValueError):
 
 
 class RefTypeError(TypeError):
+    pass
+
+
+class ConfigError(ValueError):
     pass
 
 
@@ -107,12 +124,50 @@ _Self = TypeVar("_Self", bound="BaseStacRepository")
 
 class BaseStacRepository(metaclass=ABCMeta):
 
+    StacConfig: Optional[Type[BaseModel]] = None
+    StacTransaction: Type[BaseStacTransaction] = BaseStacTransaction
+    StacCommit: Type[BaseStacCommit] = BaseStacCommit
+
+    @classmethod
+    def validate_config(
+        cls,
+        config: Optional[Dict[str, str]] = None
+    ) -> BaseModel | None:
+        if cls.StacConfig is not None and config is not None:
+            try:
+                return cls.StacConfig.model_validate(config)
+            except ValidationError as error:
+                raise ConfigError("Invalid configuration") from error
+
+    @classmethod
+    def validate_config_option(
+        cls,
+        config_key: str,
+        config_value: Optional[str] = None
+    ) -> Any:
+        if cls.StacConfig is None:
+            raise ConfigError(f"Configuration not available")
+
+        if config_key not in cls.StacConfig.model_fields.keys():
+            raise ConfigError(f"No such configuration option \"{config_key}\"")
+
+        if config_value is None:
+            return None
+
+        option_adapter = TypeAdapter(cls.StacConfig.model_fields[config_key].annotation)
+
+        try:
+            return option_adapter.validate_python(config_value)
+        except ValidationError as error:
+            raise ConfigError("Invalid \"{key}\" configuration option value") from error
+
     @classmethod
     @abstractmethod
     def init(
         cls: Type[_Self],
         repository: str,
         root_catalog: Catalog,
+        config: Optional[Dict[str, str]] = None
     ) -> _Self:
         """Create a new repository.
 
@@ -121,6 +176,7 @@ class BaseStacRepository(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
+    @abstractmethod
     def __init__(
         self,
         repository: str,
@@ -132,12 +188,24 @@ class BaseStacRepository(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
+    def get_config(self) -> BaseModel:
+        raise ConfigError("Configuration not available")
+
+    def set_config(
+        self,
+        config_key: str,
+        config_value: str
+    ):
+        raise ConfigError("Configuration not available")
+
     @property
-    @abstractmethod
     def commits(self) -> Iterator[BaseStacCommit]:
         """Iterates over the commit history, from most to least recent.
         """
-        raise NotImplementedError
+        commit = self.StacCommit(self)
+        yield commit
+        while (commit := commit.parent) is not None:
+            yield commit
 
     def get_commit(self, ref: str | datetime.datetime | int) -> BaseStacCommit:
         """Get a commit matching some ref. Either the commit id, its index from the most recent commit, or the most recent commit before some date.
@@ -174,11 +242,6 @@ class BaseStacRepository(metaclass=ABCMeta):
         else:
             raise RefTypeError("Bad ref")
 
-    def get_history(self, product_id: str | None = None) -> Iterator[BaseStacCommit]:
-        """Iterates over the commit history, yielding only those where some product can be found in the catalog.
-        """
-        raise NotImplementedError
-
     def _ingest_product(
         self,
         processor: Processor,
@@ -191,9 +254,11 @@ class BaseStacRepository(metaclass=ABCMeta):
 
         Raises:
             ProcessingError: The processor raised an error
-            StacObjectError: The processed product is not a valid Item or Collection, or cannot compute the parent new extent
-            ParentNotFoundError
-            ParentCatalogError: The parent is an Item
+            ObjectNotFoundError: Product does not exist or is outside of the repository
+            StacObjectError: Product is not a valid STAC Object
+            ParentNotFoundError: Parent not found in catalog
+            ParentCatalogError: Parent not suitable (Item)
+            RootCatalogError: Product has the same id as the root and would thus replace it
         """
         reporter = JobReportBuilder(product_source)
 
@@ -206,7 +271,8 @@ class BaseStacRepository(metaclass=ABCMeta):
             except Exception as error:
                 raise ProcessingError from error
 
-            cataloged_stac_object = transaction.search(product_id)
+            head = next(self.commits)
+            cataloged_stac_object = head.search(product_id)
 
             if cataloged_stac_object is not None:
                 try:
@@ -238,21 +304,21 @@ class BaseStacRepository(metaclass=ABCMeta):
             yield reporter.fail(error)
             raise error
 
-    def _ingest(
+    def ingest(
         self,
         *sources: str,
-        processor_id: str = "none",
+        processor_id: str = "stac",
         parent_id: Optional[str] = None,
-        transaction_cls: type[BaseStacTransaction]
     ) -> Iterator[JobReport]:
         """Discover and ingest products from some source(s).
 
         Raises:
-            ProcessorNotFoundError
             ProcessingError: The processor raised an error
-            StacObjectError: The processed product is not a valid Item or Collection, or cannot compute the parent new extent
-            ParentNotFoundError
-            ParentCatalogError: The parent is an Item
+            ObjectNotFoundError: Product does not exist or is outside of repository
+            StacObjectError: Product is not a valid STAC Object
+            ParentNotFoundError: Parent not found in catalog
+            ParentCatalogError: Parent not suitable (Item)
+            RootCatalogError: Product has the same id as the root and would thus replace it
             Dict[str, Exception]: Map of source/product_source to Exceptions (any of the above)
         """
         processor: Processor = discovered_processors.get(processor_id)
@@ -283,8 +349,9 @@ class BaseStacRepository(metaclass=ABCMeta):
                 else:
                     yield reporter.complete(f"No products discovered")
 
-        with transaction_cls(self).context(
-            message=f"{processor_id} ingestion : \n\n - " + "\n - ".join(product_sources)
+        with self.StacTransaction(self).context(
+            message=f"Ingest (processor={processor_id}:{processor.__version__}) : \n\n - " +
+            "\n - ".join(product_sources)
         ) as transaction:
             for product_source in product_sources:
                 try:
@@ -297,46 +364,24 @@ class BaseStacRepository(metaclass=ABCMeta):
                 except Exception as error:
                     errors[f"product={product_source}"] = error
 
-        if errors:
-            raise errors
+            if errors:
+                raise errors
 
-    @abstractmethod
-    def ingest(
-        self,
-        *sources: str,
-        processor_id: str = "none",
-        parent_id: Optional[str] = None,
-    ) -> Iterator[JobReport]:
-        """Discover and ingest products from some source(s) into the catalog.
-
-        Raises:
-            ProcessorNotFoundError
-            ProcessingError: The processor raised an error
-            StacObjectError: The processed product is not a valid Item or Collection, or cannot compute the parent new extent
-            ParentNotFoundError
-            ParentCatalogError: The parent is an Item
-            Dict[str, Exception]: Map of source/product_source to Exceptions (any of the above)
-        """
-
-        # This method is just a wrapper for concrete implementations to call _ingest() with the proper StacTransaction type
-        raise NotImplementedError
-
-    def _prune(
+    def prune(
         self,
         *product_ids: str,
-        transaction_cls: type[BaseStacTransaction]
     ) -> Iterator[JobReport]:
         """Removes some product(s) from the catalog.
 
         Raises:
             RootUncatalogError: The product is the catalog root
-            StacObjectError: Cannot compute the parent new extent
+            ParentNotFoundError
             Dict[str, Exception]: Map of ids to Exceptions (any of the above)
         """
         errors = ProcessingErrors()
 
-        transaction_message = "prune : \n\n - " + "\n - ".join(product_ids)
-        with transaction_cls(self).context(message=transaction_message) as transaction:
+        transaction_message = "Prune : \n\n - " + "\n - ".join(product_ids)
+        with self.StacTransaction(self).context(message=transaction_message) as transaction:
             for product_id in product_ids:
                 reporter = JobReportBuilder(product_id)
 
@@ -356,27 +401,5 @@ class BaseStacRepository(metaclass=ABCMeta):
 
                     errors[product_id] = error
 
-        if errors:
-            raise errors
-
-    @abstractmethod
-    def prune(
-        self,
-        *product_ids: str
-    ) -> Iterator[JobReport]:
-        """Removes some product(s) from the catalog.
-
-        Raises:
-            RootUncatalogError: The product is the catalog root
-            StacObjectError: Cannot compute the parent new extent
-            Dict[str, Exception]: Map of ids to Exceptions (any of the above)
-        """
-        # This method is just a wrapper for concrete implementations to call _prune() with the proper StacTransaction type
-        raise NotImplementedError
-
-    def export(
-        self,
-        cls: Optional[BaseStacRepository] = None
-    ):
-        """Exports the catalog to another backend or the filesystem."""
-        raise NotImplementedError
+            if errors:
+                raise errors

@@ -10,9 +10,10 @@ import urllib
 import urllib.parse
 import logging
 import abc
+import io
 
 from ..__about__ import __version__, __name_public__
-from ..lib.cache import Cache, CacheMeta
+from .cache import CacheMeta
 
 _logger = logging.getLogger(f"{__name_public__}:git")
 
@@ -167,7 +168,7 @@ class Commit(metaclass=CacheMeta):
             self.id
         )
 
-    def show(self, file: PathLike[str], *, text: bool = True) -> str | bytes:
+    def show(self, file: PathLike[str], *, text: bool = True) -> str | io.RawIOBase | io.BufferedIOBase:
         file_rel = path.relpath(file, self._repository.dir)
 
         result = self._repository._git(
@@ -311,7 +312,7 @@ class Repository():
         message: str,
     ) -> Commit:
 
-        signature = Signature.make(f"{__name_public__}:{__version__}")
+        signature = Signature.make(f"{__name_public__}:{__version__} <>")
 
         self._git(
             "commit",

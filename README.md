@@ -2,9 +2,13 @@
 
 A (git-)versionned [STAC](https://stacspec.org/en) catalog and catalog management system.
 
-This project is still under active development.
+Project in late stage development phase.
 
 ## Project Goal - _What does it do ?_
+
+is a high level storage system for STAC ressources implementing features auch as : transactional ingestions and deletions, immutable history, and backup., plugable provider processors to automate ingestions.
+
+Two backends currently exists : Git(+GitLFS) and Filesystem
 
 `stac-repository` is a higher-level library and cli that uses **Git** (with [Git LFS](https://git-lfs.com/)) to build, host, and maintain a large and complex [**STAC**](https://stacspec.org/en) catalog.
 
@@ -25,78 +29,6 @@ This interface is intended to be simple to implement while abstracting the inges
 An admin **CLI** and a **containered distribution** [WIP] is provided to manage the STAC Repository.
 
 ## CLI Demo
-
-```console
-stac-repository --help
-```
-
-```
-
- Usage: root [OPTIONS] COMMAND [ARGS]...
-
- 🌍🛰️     STAC Repository
- The interface to manage STAC Repositories.
-
-╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ --install-completion          Install completion for the current shell.                                                                                                                │
-│ --show-completion             Show completion for the current shell, to copy it or customize the installation.                                                                         │
-│ --help                        Show this message and exit.                                                                                                                              │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ version           Show stac-repository version number.                                                                                                                                 │
-│ ingest            Discover and ingest products from a source using an installed processor.                                                                                             │
-│ discover          Discover products from a source using an installed processor.                                                                                                        │
-│ ingest-products   Ingest products from a product sources using an installed processor.                                                                                                 │
-│ prune             Remove products from the catalog.                                                                                                                                    │
-│ history           Display the catalog history.                                                                                                                                         │
-│ rollback          Rollback the catalog to a previous commit.                                                                                                                           │
-│ backup            Clone (or pull) the repository **to** a backup location.                                                                                                             │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
-```
-
-```console
-stac-repository ingest demo /tmp/tmpnm_2jmfs --config /tmp/stac_repository-demo-dxmvd0fy.toml
-```
-
-```
- • /tmp/tmpnm_2jmfs/1 : Ingested
- • /tmp/tmpnm_2jmfs/2 : Ingested
-```
-
-```console
-stac-repository history --config /tmp/stac_repository-demo-dxmvd0fy.toml
-```
-
-```
-History
- • cb286cd9def1ad41e7e65841d46fbfde95fa0697 on 2025-02-11 10:09:11+00:00
-
-        + ffc0c1dfe6824bf799bb8c1363ad6470 (version=0.0.1, processor=demo:0.0.1) 945e41349f174e4aae02264e210927a7 (version=0.0.1, processor=demo:0.0.1)
-
- • 766a0c3e120614a3975d8cb4571562237dc58a3e on 2025-02-11 10:09:11+00:00
-```
-
-## Python Demo
-
-See the [`demo.py`](./demo/ingest_products.py).
-
-```python
-repository = StacRepositoryManaged(dir)
-
-# Ingesting
-
-for product_source in repository.discover("demo", source):
-    print(f"{product_source=}")
-
-    for report in repository.ingest_products("demo", product_source):
-        print(f"{str(report.context)=} : {str(report.details)=}")
-
-# .. or, equivalently,
-
-# for report in repository.ingest("demo", source):
-#     print(f"{str(report.context)=} : {str(report.details)=}")
-```
 
 ## The Processor Protocol
 

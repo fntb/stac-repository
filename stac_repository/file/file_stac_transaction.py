@@ -1,43 +1,50 @@
 from typing import (
-    Any
+    Any,
+    TYPE_CHECKING
 )
 
 import os
 import io
-import shutil
 import glob
-import orjson
 
-from stac_repository.base_stac_transaction import BaseStacTransaction
-from stac_repository.base_stac_repository import BaseStacRepository
-from .file_stac_commit import FileStacCommit
+from stac_repository.base_stac_transaction import (
+    BaseStacTransaction,
+    JSONObjectError,
+    FileNotInRepositoryError
+)
+
+from stac_repository.stac.stac_io import (
+    DefaultStacIO
+)
+
+if TYPE_CHECKING:
+    from .file_stac_repository import FileStacRepository
 
 
-class FileStacTransaction(FileStacCommit, BaseStacTransaction):
+class FileStacTransaction(DefaultStacIO, BaseStacTransaction):
 
-    def __init__(self, repository):
-        super().__init__(repository)
-
+    def __init__(self, repository: "FileStacRepository"):
+        self._base_href = repository._base_href
         self._lock()
 
     def _rename_suffixed_files(self, suffix: str):
-        root_dir = os.path.dirname(self._root_catalog_href)
+        root_dir = os.path.abspath(self._base_href)
 
         for file in glob.iglob(f"**/*.{suffix}", root_dir=root_dir, recursive=True, include_hidden=True):
             os.rename(os.path.join(root_dir, file), os.path.join(root_dir, file)[:-len(f".{suffix}")])
 
     def _remove_suffixed_files(self, suffix: str):
-        root_dir = os.path.dirname(self._root_catalog_href)
+        root_dir = os.path.abspath(self._base_href)
 
         for file in glob.iglob(f"**/*.{suffix}", root_dir=root_dir, recursive=True, include_hidden=True):
-            shutil.rmtree(os.path.join(root_dir, file))
+            os.remove(os.path.join(root_dir, file))
 
     def _remove_empty_directories(self):
-        catalog_dir = os.path.dirname(self._root_catalog_href)
+        root_dir = os.path.abspath(self._base_href)
 
         removed = set()
 
-        for (current_dir, subdirs, files) in os.walk(catalog_dir, topdown=False):
+        for (current_dir, subdirs, files) in os.walk(root_dir, topdown=False):
 
             flag = False
             for subdir in subdirs:
@@ -50,8 +57,8 @@ class FileStacTransaction(FileStacCommit, BaseStacTransaction):
                 removed.add(current_dir)
 
     def _lock(self):
-        catalog_dir = os.path.dirname(self._root_catalog_href)
-        lock_file = os.path.join(catalog_dir, ".lock")
+        root_dir = os.path.abspath(self._base_href)
+        lock_file = os.path.join(root_dir, ".lock")
 
         try:
             with open(lock_file, "r"):
@@ -61,8 +68,8 @@ class FileStacTransaction(FileStacCommit, BaseStacTransaction):
                 os.utime(lock_file, None)
 
     def _unlock(self):
-        catalog_dir = os.path.dirname(self._root_catalog_href)
-        lock_file = os.path.join(catalog_dir, ".lock")
+        root_dir = os.path.abspath(self._base_href)
+        lock_file = os.path.join(root_dir, ".lock")
 
         try:
             os.remove(lock_file)
@@ -81,19 +88,38 @@ class FileStacTransaction(FileStacCommit, BaseStacTransaction):
         self._remove_empty_directories()
         self._unlock()
 
+    def get(self, href: str):
+        try:
+            return super().get(f"{href}.tmp")
+        except FileNotFoundError:
+            pass
+
+        return super().get(href)
+
+    def get_asset(self, href: str):
+        try:
+            return super().get_asset(f"{href}.tmp")
+        except FileNotFoundError:
+            pass
+
+        return super().get_asset(href)
+
     def set(self, href: str, value: Any):
-        stac_object_s = orjson.dumps(value)
-
-        os.makedirs(os.path.dirname(href), exist_ok=True)
-
-        with open(f"{href}.tmp", "wb") as file:
-            file.write(stac_object_s)
+        return super().set(f"{href}.tmp", value)
 
     def unset(self, href: str):
-        dir = os.path.dirname(href)
-        os.rename(dir, f"{dir}.bck")
+        href = self._assert_href_in_repository(href)
+        os_href = os.path.abspath(href)
+
+        try:
+            os.rename(os_href, f"{os_href}.bck")
+        except FileNotFoundError:
+            pass
+
+        try:
+            os.rename(f"{os_href}.tmp", f"{os_href}.bck")
+        except FileNotFoundError:
+            pass
 
     def set_asset(self, href: str, asset: io.RawIOBase | io.BufferedIOBase):
-        with open(f"{href}.tmp", "wb") as asset_file:
-            while (asset_chunk := asset.read(65_536)):
-                asset_file.write(asset_chunk)
+        return super().set_asset(f"{href}.tmp", asset)

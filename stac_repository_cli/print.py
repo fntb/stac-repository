@@ -9,8 +9,6 @@ from typing import (
 
 import traceback
 
-import pystac
-import pystac.layout
 import rich.console
 import rich.status
 import rich
@@ -18,7 +16,13 @@ from rich import print
 
 from stac_repository import JobState
 from stac_repository import JobReport
-from stac_repository.stac_catalog import get_version as _get_version
+from stac_repository import (
+    Catalog,
+    Item,
+    Collection,
+    BaseStacCommit
+)
+from stac_repository.stac import get_version as _get_version
 
 
 def style_indent(s: str | List[str]) -> str:
@@ -129,7 +133,7 @@ def print_reports(operation: Iterator[JobReport], *, operation_name=".", console
             console.print(style_report(job_report), crop=False, overflow="ignore")
 
 
-def style_stac(obj: pystac.STACObject) -> str:
+def style_stac(obj: Item | Collection | Catalog) -> str:
     return "{id} v{version}".format(
         id=obj.id,
         version=_get_version(obj)
@@ -225,3 +229,17 @@ def print_error(
 #             )
 #         )
 #     )
+
+def style_commit(commit: BaseStacCommit, include_message: bool = False):
+
+    if include_message and commit.message is not NotImplemented:
+        return "[bold]{id}[/bold] on {datetime}\n{message}".format(
+            id=commit.id,
+            datetime=f"{commit.datetime:%c}",
+            message=style_indent(commit.message)
+        )
+    else:
+        return "[bold]{id}[/bold] on {datetime}".format(
+            id=commit.id,
+            datetime=f"{commit.datetime:%c}",
+        )

@@ -1,9 +1,7 @@
 from __future__ import annotations
 from typing import (
-    Dict,
     Optional,
-    Type,
-    Any
+    TYPE_CHECKING
 )
 
 from types import (
@@ -12,28 +10,36 @@ from types import (
 
 import os
 import datetime
-import io
+import posixpath
 from abc import abstractmethod, ABCMeta
 
 from .stac import (
     search,
     Item,
     Collection,
-    Catalog
+    Catalog,
+    ReadableStacIO,
+    JSONObjectError,
+    FileNotInRepositoryError
 )
+
+if TYPE_CHECKING:
+    from .base_stac_repository import BaseStacRepository
 
 
 class BackupValueError(ValueError):
     ...
 
 
-class BaseStacCommit(metaclass=ABCMeta):
-
-    _root_catalog_href: str
+class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
 
     @abstractmethod
-    def __init__(self, repository):
+    def __init__(self, repository: "BaseStacRepository"):
         raise NotImplementedError
+
+    @property
+    def _catalog_href(self):
+        return posixpath.join(self._base_href, "catalog.json")
 
     @property
     @abstractmethod
@@ -46,28 +52,22 @@ class BaseStacCommit(metaclass=ABCMeta):
         raise NotImplementedError
 
     @property
+    def message(self) -> str | NotImplementedType:
+        return NotImplemented
+
+    @property
     @abstractmethod
-    def message(self) -> Optional[str]:
+    def parent(self) -> BaseStacCommit | None:
         raise NotImplementedError
 
-    @abstractmethod
-    def get(self, href: str) -> Any:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_asset(self, href: str) -> io.RawIOBase | io.BufferedIOBase:
-        raise NotImplementedError
-
-    @abstractmethod
     def rollback(self) -> Optional[NotImplementedType]:
         """Rollback the repository to this commit.
 
         Returns:
             NotImplemented: If the concrete implementation does not support rollbacks.
         """
-        raise NotImplementedError
+        return NotImplemented
 
-    @abstractmethod
     def backup(self, backup_url: str) -> Optional[NotImplementedType]:
         """Backup the repository as it was in this commit.
 
@@ -77,7 +77,7 @@ class BaseStacCommit(metaclass=ABCMeta):
         Raises:
             BackupValueError: If the backup_url is not valid
         """
-        raise NotImplementedError
+        return NotImplemented
 
     def search(
         self,
@@ -86,11 +86,7 @@ class BaseStacCommit(metaclass=ABCMeta):
         """Searches the object with `id` in the commit catalog.
         """
         return search(
-            self._root_catalog_href,
+            self._catalog_href,
             id=id,
-            scope=os.path.dirname(self._root_catalog_href),
             store=self
         )
-
-    def describe(self):
-        raise NotImplementedError

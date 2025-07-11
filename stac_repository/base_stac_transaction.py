@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import (
     Optional,
-    Any
+    TYPE_CHECKING
 )
 
 from abc import (
@@ -12,32 +12,37 @@ from abc import (
 
 import contextlib
 import os
-import io
-
-
-from .base_stac_commit import BaseStacCommit
+import logging
+import posixpath
 
 from .stac import (
+    StacIO,
+    DefaultStacIO,
     Item,
     Collection,
     Catalog,
-    Link,
-    Asset,
-    MimeTypes,
     load,
     load_parent,
+    set_parent,
+    unset_parent,
     save,
     delete,
     search,
     compute_extent,
-    is_in_scope,
-    urlparse,
-    urljoin
+    StacObjectError,
+    JSONObjectError,
+    FileNotInRepositoryError
 )
+
+if TYPE_CHECKING:
+    from .base_stac_repository import BaseStacRepository
+
+
+logger = logging.getLogger(__file__)
 
 
 class ObjectNotFoundError(FileNotFoundError):
-    ...
+    pass
 
 
 class ParentNotFoundError(ObjectNotFoundError):
@@ -52,7 +57,19 @@ class RootUncatalogError(ValueError):
     pass
 
 
-class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
+class RootCatalogError(ValueError):
+    pass
+
+
+class BaseStacTransaction(StacIO, metaclass=ABCMeta):
+
+    @abstractmethod
+    def __init__(self, repository: "BaseStacRepository"):
+        raise NotImplementedError
+
+    @property
+    def _catalog_href(self):
+        return posixpath.join(self._base_href, "catalog.json")
 
     @contextlib.contextmanager
     def context(self, *, message: Optional[str] = None, **other_commit_args):
@@ -66,19 +83,6 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
         except Exception as error:
             self.abort()
             raise error
-
-    @abstractmethod
-    def set(self, href: str, value: Any):
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_asset(self, href: str, asset: io.RawIOBase | io.BufferedIOBase):
-        raise NotImplementedError
-
-    @abstractmethod
-    def unset(self, href: str):
-        """Delete the STAC object at href, all its descendants, and all their assets"""
-        raise NotImplementedError
 
     @abstractmethod
     def abort(self):
@@ -95,30 +99,53 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
         product_file: str,
         parent_id: Optional[str] = None,
     ):
-        catalog_scope = os.path.dirname(self._root_catalog_href)
+        """Catalogs a product.
 
-        product = load(
-            product_file,
-            recursive=True,
-            scope=os.path.dirname(product_file)
-        )
+        Raises:
+            ObjectNotFoundError: Product does not exist or is outside of repository
+            StacObjectError: Product is not a valid STAC Object
+            ParentNotFoundError: Parent not found in catalog
+            ParentCatalogError: Parent not suitable (Item)
+            RootCatalogError: Product has the same id as the root and would thus replace it
+        """
 
-        product.links = [
-            link
-            for link in product.links
-            if link.rel not in ("parent", "root", "self")
-        ]
+        product_store = DefaultStacIO(base_href=os.path.dirname(product_file))
+
+        try:
+            product = load(
+                product_file,
+                resolve_descendants=True,
+                resolve_assets=True,
+                store=product_store
+            )
+        except FileNotFoundError as error:
+            raise ObjectNotFoundError(f"{product_file} does not exist") from error
+        except StacObjectError as error:
+            raise StacObjectError(f"{product_file} is not a valid STAC Object") from error
+        except FileNotInRepositoryError as error:
+            raise ObjectNotFoundError(
+                f"{product_file} cannot be retrieved outside of repository '{os.path.dirname(product_file)}'"
+            ) from error
+
+        unset_parent(product)
+
+        try:
+            self.uncatalog(product.id)
+        except ObjectNotFoundError:
+            pass
 
         if parent_id is None:
-            parent = load(
-                self._root_catalog_href,
-                store=self
-            )
+            try:
+                parent = load(
+                    self._catalog_href,
+                    store=self,
+                )
+            except (FileNotFoundError, FileNotInRepositoryError, StacObjectError) as error:
+                raise ParentNotFoundError(f"Catalog root not found") from error
         else:
             parent = search(
-                self._root_catalog_href,
+                self._catalog_href,
                 id=parent_id,
-                scope=catalog_scope,
                 store=self
             )
 
@@ -128,113 +155,32 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
         if isinstance(parent, Item):
             raise ParentCatalogError(f"Cannot catalog under {parent_id}, this is an Item")
 
-        try:
-            self.uncatalog(product.id)
-        except ObjectNotFoundError:
-            pass
+        set_parent(product, parent)
 
-        product_link_href: str
-        product_link_rel: str
-        if isinstance(product, Item):
-            product_link_href = urljoin(product.id, f"{product.id}.json")
-            product_link_rel = "item"
-        elif isinstance(product, Collection):
-            product_link_href = urljoin(product.id, "collection.json")
-            product_link_rel = "child"
-        else:
-            product_link_href = urljoin(product.id, "catalog.json")
-            product_link_rel = "child"
-
-        for link in parent.links:
-            if link.href == product_link_href:
-                break
-        else:
-            parent.links.append(Link(
-                href=product_link_href,
-                rel=product_link_rel,
-                type=MimeTypes.json,
-                _target=product
-            ))
-
-        parent_link_href: str
-        if isinstance(parent, Collection):
-            parent_link_href = urljoin("..", "collection.json")
-        else:
-            parent_link_href = urljoin("..", "catalog.json")
-
-        product.links.append(Link(
-            href=parent_link_href,
-            rel="parent",
-            type=MimeTypes.json,
-        ))
-
-        def normalize_link(link: Link) -> Link | None:
-            if link.rel in ["self", "alternate"]:
-                return None
-
-            if link.rel not in ["child", "item"]:
-                return link
-
-            if link.target is None:
-                return link
-
-            child = link.target
-
-            if isinstance(child, Item):
-                link.href = os.path.join(child.id, f"{child.id}.json")
-            elif isinstance(child, Collection):
-                link.href = os.path.join(child.id, f"collection.json")
-            else:
-                link.href = os.path.join(child.id, f"catalog.json")
-
-            normalize(child)
-
-            return link
-
-        def normalize_asset(asset: Asset) -> Asset | None:
-            if is_in_scope(asset.href, scope=catalog_scope):
-                asset.target = asset.href
-                asset.href = os.path.basename(urlparse(asset.href).path)
-
-            return asset
-
-        def normalize(stac_object: Item | Collection | Catalog):
-            stac_object.links = [
-                normalized_link
-                for link in stac_object.links
-                if (normalized_link := normalize_link(link)) is not None
-            ]
-
-            if isinstance(stac_object, (Item, Collection)) and stac_object.assets:
-                stac_object.assets = {
-                    key: normalized_asset
-                    for (key, asset) in stac_object.assets.items()
-                    if (normalized_asset := normalize_asset(asset)) is not None
-                }
-
-            for link in stac_object.links:
-                if link.target is not None:
-                    link.target.target = urljoin(stac_object.target, link.href)
-
-                    normalize(link.target)
-
-        normalize(parent)
-
+        last_ancestor: Item | Collection | Catalog = parent
         while True:
-            parent.extent = compute_extent(parent, scope=catalog_scope, store=self)
+            try:
+                last_ancestor.extent = compute_extent(last_ancestor, store=self)
+            except StacObjectError as error:
+                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                break
 
-            grand_parent = load_parent(
-                parent,
-                store=self
-            )
+            try:
+                ancestor = load_parent(
+                    last_ancestor,
+                    store=self,
+                )
+            except FileNotInRepositoryError as error:
+                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                break
 
-            if grand_parent is None:
+            if ancestor is None:
                 break
             else:
-                parent = grand_parent
+                last_ancestor = ancestor
 
         save(
-            parent,
+            last_ancestor,
             store=self
         )
 
@@ -245,53 +191,54 @@ class BaseStacTransaction(BaseStacCommit, metaclass=ABCMeta):
         """Uncatalogs a product.
 
         Raises:
-            RootUncatalogError: The product is the catalog root
-            StacObjectError: Cannot compute the parent new extent
             ObjectNotFoundError
+            ParentNotFoundError
+            RootUncatalogError: The product is the catalog root
         """
 
-        catalog_scope = os.path.dirname(self._root_catalog_href)
-
         product = search(
-            self._root_catalog_href,
+            self._catalog_href,
             product_id,
-            scope=catalog_scope,
             store=self
         )
 
         if product is None:
             raise ObjectNotFoundError(f"Product {product_id} not found in catalog")
 
-        for link in product.links:
-            if link.rel == "parent":
-                parent_link = link
-                break
-        else:
+        try:
+            parent = load_parent(product, store=self)
+        except FileNotInRepositoryError as error:
+            raise ParentNotFoundError("Parent not found in catalog") from error
+
+        if parent is None:
             raise RootUncatalogError(f"Cannot uncatalog the root")
 
-        parent = load(
-            parent_link.href,
-            store=self
-        )
+        unset_parent(product)
+        delete(product, store=self)
 
-        parent.links = [link for link in parent.links if link.href != product.target]
-
-        delete(product, scope=catalog_scope, store=self)
-
+        last_ancestor: Item | Collection | Catalog = parent
         while True:
-            parent.extent = compute_extent(parent, scope=catalog_scope, store=self)
+            try:
+                last_ancestor.extent = compute_extent(last_ancestor, store=self)
+            except StacObjectError as error:
+                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                break
 
-            grand_parent = load_parent(
-                parent,
-                store=self
-            )
+            try:
+                ancestor = load_parent(
+                    last_ancestor,
+                    store=self,
+                )
+            except FileNotInRepositoryError as error:
+                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                break
 
-            if grand_parent is None:
+            if ancestor is None:
                 break
             else:
-                parent = grand_parent
+                last_ancestor = ancestor
 
         save(
-            parent,
+            last_ancestor,
             store=self
         )

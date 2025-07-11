@@ -1,10 +1,6 @@
-from typing import (
-    Iterator,
-    Optional
-)
 
 import os
-from os import path
+import posixpath
 
 from stac_repository.base_stac_repository import (
     BaseStacRepository,
@@ -17,14 +13,16 @@ from stac_repository.stac import (
     save
 )
 
-from .file_stac_commit import FileStacCommit
 from .file_stac_transaction import FileStacTransaction
+from .file_stac_commit import FileStacCommit
 
 
 class FileStacRepository(BaseStacRepository):
 
-    _repository_dir: str
-    _root_catalog_file: str
+    StacTransaction = FileStacTransaction
+    StacCommit = FileStacCommit
+
+    _base_href: str
 
     @classmethod
     def init(
@@ -32,15 +30,15 @@ class FileStacRepository(BaseStacRepository):
         repository: str,
         root_catalog: Catalog,
     ):
-        repository_dir = path.abspath(repository)
+        repository_dir = os.path.abspath(repository)
 
-        if not path.isdir(repository_dir):
+        if not os.path.isdir(repository_dir):
             os.makedirs(repository_dir, exist_ok=True)
 
         if os.listdir(repository_dir):
             raise RepositoryAlreadyInitializedError(f"Repository {repository_dir} is not empty")
 
-        root_catalog.target = os.path.join(repository_dir, "catalog.json")
+        root_catalog.self_href = posixpath.join(posixpath.abspath(repository_dir), "catalog.json")
         save(root_catalog)
 
         return cls(repository_dir)
@@ -49,26 +47,7 @@ class FileStacRepository(BaseStacRepository):
         self,
         repository: str
     ):
-        self._repository_dir = path.abspath(repository)
-        self._root_catalog_file = path.join(self._repository_dir, "catalog.json")
+        self._base_href = posixpath.abspath(repository)
 
-        if not path.exists(self._root_catalog_file):
+        if not os.path.exists(os.path.abspath(self._base_href)):
             raise RepositoryNotFoundError
-
-    @property
-    def commits(self) -> Iterator[FileStacCommit]:
-        yield FileStacCommit(self)
-
-    def ingest(
-        self,
-        *sources: str,
-        processor_id: Optional[str] = "none",
-        parent_id: Optional[str] = None,
-    ):
-        return super()._ingest(*sources, processor_id=processor_id, parent_id=parent_id, transaction_cls=FileStacTransaction)
-
-    def prune(
-        self,
-        *product_ids: str,
-    ):
-        return super()._prune(*product_ids, transaction_cls=FileStacTransaction)

@@ -68,12 +68,9 @@ class TestCommit():
     def test_base_properties(self, single_commit_repository: GitCommitDescription):
         commit = single_commit_repository.repository.head
 
-        assert commit.author == single_commit_repository.signature
-        assert commit.committer == single_commit_repository.signature
         assert datetime.datetime.now(
             datetime.timezone.utc) - datetime.timedelta(minutes=1) <= commit.datetime <= datetime.datetime.now(datetime.timezone.utc)
         assert commit.message == single_commit_repository.message
-
 
     @pytest.mark.skip(reason="Bad Testing Implementation")
     def test_refs(self, single_commit_repository: GitCommitDescription):

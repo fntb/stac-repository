@@ -9,7 +9,8 @@ from .backend import Backend
 
 from .base_stac_commit import (
     BaseStacCommit,
-    BackupValueError
+    BackupValueError,
+    FileNotInRepositoryError
 )
 from .base_stac_repository import (
     BaseStacRepository,
@@ -23,7 +24,10 @@ from .base_stac_repository import (
     StacObjectError,
     ParentCatalogError,
     RootUncatalogError,
-    ParentNotFoundError
+    ParentNotFoundError,
+    RootCatalogError,
+    ObjectNotFoundError,
+    ConfigError
 )
 from .base_stac_transaction import (
     BaseStacTransaction,
@@ -36,4 +40,10 @@ from .base_stac_transaction import (
 from .job_report import (
     JobReport,
     JobState
+)
+
+from .stac import (
+    Item,
+    Collection,
+    Catalog,
 )

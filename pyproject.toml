@@ -3,7 +3,15 @@ dynamic = ["version"]
 
 name = "stac-repository"
 description = "A (git-)versionned STAC catalog and catalog management system"
-keywords = ["pystac", "stac", "database", "git", "repository"]
+keywords = [
+    "pystac",
+    "stac",
+    "database",
+    "git",
+    "repository",
+    "storage",
+    "store",
+]
 readme = "README.md"
 
 classifiers = [
@@ -26,28 +34,21 @@ license-files = ["LICENCE.txt"]
 requires-python = ">=3.12"
 
 dependencies = [
-    "pystac ~= 1.11.0",
     "pydantic ~= 2.10.3",
-    "stac_pydantic ~= 3.2.0",
+    "stac-pydantic~=3.2.0",
     "orjson ~= 3.10",
-    "xxhash~=3.5.0",
+    "shapely ~= 2.0.0",
 ]
 
 [dependency-groups]
 
-dev = [
-    "pytest ~= 8.3.0",
-    "shapely ~= 2.0.0",
-    "numpy ~= 2.2.0",
-    "matplotlib ~= 3.10.0",
-    "pyproj ~= 3.7.0",
-    "pillow ~= 11.1.0",
-]
+dev = ["pytest ~= 8.3.0"]
 
-cli = ["pydantic ~= 2.10.3", "typer ~= 0.15.1"]
+cli = ["typer ~= 0.15.1"]
 
 [project.scripts]
 stac-repository = "stac_repository_cli.app:app"
+stac-processor = "stac_processor_cli.app:app"
 
 [project.urls]
 Homepage = "https://github.com/fntb/stac-repository"
@@ -60,7 +61,14 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["stac_repository", "stac_repository_cli"]
+packages = [
+    "stac_repository",
+    "stac_repository.file",
+    "stac_repository.git",
+    "stac_repository.stac",
+    "stac_repository_cli",
+    "stac_processor_cli",
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "stac_repository.__about__.__version__" }

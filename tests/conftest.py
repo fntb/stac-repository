@@ -16,14 +16,9 @@ import pytest
 import pystac
 import pystac.layout
 
-from stac_repository.lib.stac import walk_stac_object
 from stac_repository.git.git import Repository as GitRepository
 from stac_repository.git.git import Signature as GitSignature
 from stac_repository.git.git import Commit as GitCommit
-from stac_repository.managed import StacRepositoryExtension
-
-from stac_processor_demo import SimpleProduct
-import stac_processor_demo as demo_processor
 
 
 @pytest.fixture
@@ -193,8 +188,6 @@ class GitCommitDescription():
 
         commit = self.repository.commit(
             self.message,
-            self.signature,
-            self.signature
         )
 
         if self.tags:
@@ -328,8 +321,6 @@ class StacCommitDescription():
         if not self.is_commited:
             commit = self.repository.commit(
                 "test",
-                GitSignature("test"),
-                GitSignature("test"),
             )
             self.is_commited = True
             self._commit = commit
@@ -378,179 +369,3 @@ class StacRepositoryDescription(list[StacCommitDescription]):
             return self[:i + 1]
         else:
             return []
-
-
-class StacRepositoryBuilder():
-
-    _log: StacRepositoryDescription
-    _repository: GitRepository
-    _root_catalog_file: None | PathLike[str]
-
-    def __init__(
-            self,
-            repository: GitRepository
-    ):
-        self._log = StacRepositoryDescription()
-        self._repository = repository
-
-    @property
-    def log(self) -> StacRepositoryDescription:
-        return self._log
-
-    @property
-    def repository(self) -> GitRepository:
-        return self._repository
-
-    def mutate(
-            self,
-            *,
-            stage: bool,
-            commit: bool
-    ) -> StacRepositoryBuilder:
-        not_init = not self._log
-
-        if not_init:
-            self._root_catalog_file = path.join(
-                self._repository.dir,
-                pystac.Catalog.DEFAULT_FILE_NAME
-            )
-
-            root_catalog = pystac.Catalog(
-                "test",
-                "test",
-                href=self._root_catalog_file
-            )
-
-            root_catalog.save(
-                catalog_type=pystac.CatalogType.SELF_CONTAINED
-            )
-
-            self._object_ids = set()
-            self._product_ids = set()
-
-        with tempfile.TemporaryDirectory() as dir:
-            SimpleProduct.generate(dir)
-            product_id = demo_processor.id(dir)
-            product_version = demo_processor.version(dir)
-            product_stac_file = demo_processor.process(dir)
-            product_stac_object = pystac.Item.from_file(product_stac_file)
-
-            StacRepositoryExtension.implement(
-                product_stac_object,
-                processor_id="demo",
-                processor_version=demo_processor.__version__,
-                product_version=product_version
-            )
-
-            product_stac_object.save_object()
-
-            demo_processor.catalog(
-                product_stac_file,
-                catalog_file=self._root_catalog_file
-            )
-
-        added_object_ids = set(
-            stac_object.id
-            for stac_object
-            in walk_stac_object(product_stac_object)
-        )
-
-        modified_object_ids = set()
-
-        if not_init:
-            added_object_ids = added_object_ids | set(["test", "demo"])
-        else:
-            modified_object_ids = modified_object_ids | set(["demo"])
-
-        self._object_ids |= added_object_ids
-
-        ingested_product_ids = set([product_id])
-
-        self._product_ids |= ingested_product_ids
-
-        self._log.append(
-            StacCommitDescription(
-                self._repository,
-                pystac.Catalog.from_file(self._root_catalog_file),
-                object_ids=self._object_ids.copy(),
-                added_object_ids=added_object_ids,
-                modified_object_ids=modified_object_ids,
-                removed_object_ids=set(),
-                product_ids=self._product_ids.copy(),
-                ingested_product_ids=ingested_product_ids,
-                reprocessed_product_ids=set(),
-                pruned_product_ids=set()
-            )
-        )
-
-        if stage:
-            self._log.working_directory.stage()
-
-        if commit:
-            self._log.index.commit()
-
-        return self
-
-
-@pytest.fixture
-def make_stac_repository_description(make_dir):
-
-    def _make_stac_repository_description(
-            *,
-            commits: bool | int = 0,
-            index: bool = False,
-            working_directory: bool = False
-    ) -> StacRepositoryDescription:
-        dir = make_dir()
-
-        repository = GitRepository(dir)
-        repository.init()
-
-        builder = StacRepositoryBuilder(
-            repository
-        )
-
-        if commits:
-            commits = commits if not isinstance(commits, bool) else 1
-
-            for _ in range(commits):
-                builder.mutate(
-                    stage=True,
-                    commit=True
-                )
-
-        if index:
-            builder.mutate(
-                stage=True,
-                commit=False
-            )
-
-        if working_directory:
-            builder.mutate(
-                stage=False,
-                commit=False
-            )
-
-        return builder.log
-
-    yield _make_stac_repository_description
-
-
-@pytest.fixture
-def stac_repository_description(make_stac_repository_description) -> StacRepositoryDescription:
-
-    return make_stac_repository_description(
-        commits=2,
-        index=True,
-        working_directory=True
-    )
-
-
-@pytest.fixture
-def uninitialized_stac_repository_description(make_stac_repository_description) -> StacRepositoryDescription:
-
-    return make_stac_repository_description(
-        commits=0,
-        index=False,
-        working_directory=True
-    )

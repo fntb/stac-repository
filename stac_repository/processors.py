@@ -2,11 +2,11 @@ import importlib
 import pkgutil
 
 from .processor import Processor
-from .none_processor import NoneProcessor
+from .stac_processor import StacProcessor
 
 
 discovered_processors: dict[str, Processor] = {
-    "none": NoneProcessor,
+    "stac": StacProcessor,
     **{
         name[len("stac_processor_"):]: importlib.import_module(name)
         for finder, name, ispkg

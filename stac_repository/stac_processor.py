@@ -15,13 +15,17 @@ from .stac import (
     StacObjectError
 )
 
+from .processor import Processor
 
-class NoneProcessor:
+
+class StacProcessor(Processor):
 
     __version__ = "0.0.1"
 
     @staticmethod
     def discover(source: str) -> Iterator[str]:
+        source = os.path.abspath(source)
+
         def is_stac_file(file: str):
             if mimetypes.guess_type(file)[0] != "application/json":
                 return False
@@ -36,8 +40,6 @@ class NoneProcessor:
         if not os.path.lexists(source):
             return
 
-        source = os.path.abspath(source)
-
         if os.path.isdir(source):
             for file_name in os.listdir(source):
                 file = os.path.join(source, file_name)
@@ -49,10 +51,12 @@ class NoneProcessor:
 
     @staticmethod
     def id(product_source: str) -> str:
+        product_source = os.path.abspath(product_source)
         return load(product_source).id
 
     @staticmethod
     def version(product_source: str) -> str:
+        product_source = os.path.abspath(product_source)
         try:
             return get_version(load(product_source))
         except VersionNotFoundError as error:
@@ -60,4 +64,5 @@ class NoneProcessor:
 
     @staticmethod
     def process(product_source: str) -> PathLike[str]:
+        product_source = os.path.abspath(product_source)
         return os.path.abspath(product_source)
