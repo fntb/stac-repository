@@ -187,7 +187,7 @@ test_repository/catalog.json
 
 ## Motivation - _Why this Project ?_
 
-**Full motivation is detailed in [`motivation.md`](https://github.com/fntb/stac-repository/docs/motivation.md).**
+**Full motivation is detailed in [`motivation.md`](https://github.com/fntb/stac-repository/blob/main/docs/motivation.md).**
 
 Presenting scientific data products as STAC catalogs is primarily motivated by the objective of achieving data [FAIR](https://en.wikipedia.org/wiki/FAIR_data)-ness (Findable, Accessible, Interoperable, Reusable). The mature [STAC ecosystem](https://stacindex.org/ecosystem) makes building such a catalog relatively straightforward for simple cases (e.g. [pystac | Creating a Landsat 8 STAC](https://pystac.readthedocs.io/en/stable/tutorials.html#creating-a-landsat-8-stac)).
 
@@ -199,9 +199,9 @@ While `stac-repository` greatly simplifies complex STAC catalog management, the 
 
 ## The Processor Protocol
 
-A processor is a python module implementing the processor protocol described [processor.py](https://github.com/fntb/stac-repository/stac_repository/processor.py).
+A processor is a python module implementing the processor protocol described [processor.py](https://github.com/fntb/stac-repository/blob/main/stac_repository/processor.py).
 
-An example can be found in [`stac-processor.py`](https://github.com/fntb/stac-repository/stac_repository/stac_processor.py)
+An example can be found in [`stac-processor.py`](https://github.com/fntb/stac-repository/blob/main/stac_repository/stac_processor.py)
 
 ## Source & Contributing
 
@@ -209,7 +209,7 @@ An example can be found in [`stac-processor.py`](https://github.com/fntb/stac-re
 just --list
 ```
 
-See [the Justfile](https://github.com/fntb/stac-repository/justfile).
+See [the Justfile](https://github.com/fntb/stac-repository/blob/main/justfile).
 
 ## History
 
@@ -217,4 +217,4 @@ See [the Justfile](https://github.com/fntb/stac-repository/justfile).
 
 ## License
 
-[OPEN LICENCE 2.0](https://github.com/fntb/stac-repository/LICENCE.txt)
+[OPEN LICENCE 2.0](https://github.com/fntb/stac-repository/blob/main/LICENCE.txt)
