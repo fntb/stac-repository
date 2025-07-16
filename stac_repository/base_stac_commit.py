@@ -14,13 +14,14 @@ import posixpath
 from abc import abstractmethod, ABCMeta
 
 from .stac import (
-    search,
+    export,
     Item,
     Collection,
     Catalog,
     ReadableStacIO,
     JSONObjectError,
-    FileNotInRepositoryError
+    FileNotInRepositoryError,
+    search
 )
 
 if TYPE_CHECKING:
@@ -78,6 +79,19 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
             BackupValueError: If the backup_url is not valid
         """
         return NotImplemented
+
+    def export(self, export_dir: str):
+        """Exports the catalog as it was in this commit.
+
+        Raises:
+            FileExistsError
+        """
+
+        export(
+            self._catalog_href,
+            file=os.path.join(os.path.abspath(export_dir), "catalog.json"),
+            store=self
+        )
 
     def search(
         self,

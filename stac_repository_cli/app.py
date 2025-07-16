@@ -138,7 +138,7 @@ def callback(
 ):
     """🌍🛰️\tSTAC Repository
 
-    The interface to manage STAC Repositories.
+    The interface to manage STAC catalogs.
     """
 
     context.obj = SimpleNamespace(
@@ -415,6 +415,43 @@ def rollback(
 
 
 @app.command()
+def export(
+    context: typer.Context,
+    dir: Annotated[
+        str,
+        typer.Argument(help="Export directory.")
+    ],
+    ref: Annotated[
+        Optional[str],
+        typer.Option(help="Commit ref.")
+    ] = None,
+    debug: bool = False
+):
+    """Exports the catalog. If a commit ref is specified, exports the catalog as it was at that point in time.
+    """
+
+    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
+
+    if ref is not None:
+        try:
+            commit = stac_repository.get_commit(ref)
+        except CommitNotFoundError as error:
+            print_error(f"No commit found matching {ref}.", error=error, no_traceback=not debug)
+            raise typer.Exit(1)
+        except RefTypeError as error:
+            print_error(f"Bad --ref option : {str(error)}.", error=error, no_traceback=not debug)
+            raise typer.Exit(1)
+    else:
+        commit = next(stac_repository.commits)
+
+    try:
+        commit.export(dir)
+    except FileExistsError as error:
+        print_error(f"Export directory is not empty.", error=error, no_traceback=not debug)
+        raise typer.Exit(1)
+
+
+@app.command()
 def backup(
     context: typer.Context,
     backup: Annotated[
@@ -423,18 +460,13 @@ def backup(
     ],
     ref: Annotated[
         Optional[str],
-        typer.Option(
-            help=(
-                "Commit ref."
-                # "Either the commit id, "
-                # "a datetime (which will rollback to the first commit **before** this date), "
-                # "or an integer (0 being the current head, 1 the previous commit, 2 the second previous commit, etc)."
-            )
-        )
+        typer.Option(help="Commit ref.")
     ] = None,
     debug: bool = False
 ):
-    """Clones the repository **to** a backup location. Support depends on the chosen backend.
+    """Backups the repository. If a commit ref is specified, backups the repository only up to this point in time.
+
+    Support depends on the chosen backend.
     """
 
     stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)

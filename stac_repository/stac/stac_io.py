@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import (
     Protocol,
     Any,
-    Iterator,
     Optional
+)
+
+from contextlib import (
+    AbstractContextManager
 )
 
 import io
@@ -41,7 +44,7 @@ class ReadableStacIO(Protocol):
         """
         ...
 
-    def get_asset(self, href: str) -> Iterator[io.RawIOBase | io.BufferedIOBase]:
+    def get_asset(self, href: str) -> AbstractContextManager[io.RawIOBase | io.BufferedIOBase]:
         """Reads a binary Object.
 
         This method is intended to retrieve Asset files.
@@ -117,7 +120,7 @@ class DefaultReadableStacIO(ReadableStacIO):
             except orjson.JSONDecodeError as error:
                 raise JSONObjectError from error
 
-    def get_asset(self, href: str) -> Iterator[io.RawIOBase | io.BufferedIOBase]:
+    def get_asset(self, href: str) -> AbstractContextManager[io.RawIOBase | io.BufferedIOBase]:
         href = self._assert_href_in_repository(href)
         os_href = os.path.abspath(href)
 

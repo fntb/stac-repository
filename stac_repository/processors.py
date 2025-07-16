@@ -11,6 +11,6 @@ discovered_processors: dict[str, Processor] = {
         name[len("stac_processor_"):]: importlib.import_module(name)
         for finder, name, ispkg
         in pkgutil.iter_modules()
-        if name.startswith("stac_processor_")
+        if name.startswith("stac_processor_") and name != "stac_processor_cli"
     }
 }

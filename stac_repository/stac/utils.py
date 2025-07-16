@@ -11,16 +11,16 @@ from typing import (
 from collections import deque
 
 import logging
-# import os
-# from urllib.parse import urlparse
+import os
+import shutil
 import datetime
-# import urllib.parse
 import posixpath
 from urllib.parse import (
     urljoin,
     urlparse as _urlparse
 )
 
+import orjson
 import shapely
 
 from stac_pydantic.shared import (
@@ -288,6 +288,7 @@ def unset_parent(
     """
 
     links: List[Link] = []
+    parent: Collection | Catalog | None = None
 
     for link in stac_object.links:
         if link.rel == "parent":
@@ -301,7 +302,7 @@ def unset_parent(
         else:
             links.append(link)
 
-    if isinstance(stac_object, Item) and isinstance(parent, Collection):
+    if isinstance(stac_object, Item) and parent is not None and isinstance(parent, Collection):
         stac_object.collection = None
 
     stac_object.links = links
@@ -431,6 +432,82 @@ def save(
         stac_object.assets = saved_assets
 
     store.set(stac_object.self_href, stac_object.model_dump())
+
+
+def export(
+    href: str,
+    file: str,
+    store: StacIO = DefaultStacIO(),
+):
+    """Exports a STAC Object and all its descendants and assets.
+
+    Raises:
+        FileExistsError
+    """
+
+    file = os.path.abspath(file)
+    dir = os.path.dirname(file)
+    os.makedirs(dir, exist_ok=True)
+
+    if os.listdir(dir):
+        raise FileExistsError(f"{dir} is not empty")
+
+    try:
+        stac_object = load(href, resolve_assets=True, store=store)
+
+        unset_parent(stac_object)
+
+        saved_links: List[Link] = []
+
+        for link in stac_object.links:
+            if not link.href.startswith(store._base_href) or link.rel not in ["child", "item"]:
+                saved_links.append(link)
+                continue
+
+            try:
+                export(
+                    link.href,
+                    os.path.join(dir, urlrel(link.href, href)),
+                    store=store
+                )
+            except (FileNotFoundError, StacObjectError) as error:
+                logger.exception(f"[{type(error).__name__}] Ignored object {link.href} : {str(error)}")
+            else:
+                saved_links.append(link)
+
+        stac_object.links = saved_links
+
+        saved_assets: Dict[str, Asset] = {}
+
+        if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
+            for (key, asset) in stac_object.assets.items():
+                if not asset.href.startswith(store._base_href):
+                    saved_assets[key] = asset
+                    continue
+
+                asset_file = os.path.join(dir, posixpath.basename(urlpath(asset.href)))
+
+                try:
+                    with store.get_asset(asset.href) as asset_read_stream:
+                        with open(asset_file, "w+b") as asset_write_stream:
+                            while (chunk := asset_read_stream.read()):
+                                asset_write_stream.write(chunk)
+                except (FileNotFoundError) as error:
+                    logger.exception(f"[{type(error).__name__}] Ignored asset {asset.href} : {str(error)}")
+                else:
+                    saved_assets[key] = asset
+
+            stac_object.assets = saved_assets
+
+        with open(file, "w+b") as object_stream:
+            try:
+                object_stream.write(orjson.dumps(stac_object.model_dump()))
+            except orjson.JSONEncodeError as error:
+                raise JSONObjectError from error
+
+    except Exception as error:
+        shutil.rmtree(dir, ignore_errors=True)
+        raise error
 
 
 def delete(

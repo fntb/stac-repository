@@ -2,7 +2,7 @@
 dynamic = ["version"]
 
 name = "stac-repository"
-description = "A (git-)versionned STAC catalog and catalog management system"
+description = "A (git-)versionned STAC catalog storage and management system"
 keywords = [
     "pystac",
     "stac",
@@ -38,13 +38,12 @@ dependencies = [
     "stac-pydantic~=3.2.0",
     "orjson ~= 3.10",
     "shapely ~= 2.0.0",
+    "typer ~= 0.15.1",
 ]
 
 [dependency-groups]
 
 dev = ["pytest ~= 8.3.0"]
-
-cli = ["typer ~= 0.15.1"]
 
 [project.scripts]
 stac-repository = "stac_repository_cli.app:app"

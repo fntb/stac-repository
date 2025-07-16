@@ -29,6 +29,7 @@ from .utils import (
     compute_extent,
     get_version,
     search,
+    export,
     StacObjectError,
     VersionNotFoundError
 )

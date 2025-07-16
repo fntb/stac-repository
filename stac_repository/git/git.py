@@ -1,4 +1,7 @@
 from __future__ import annotations
+from typing import (
+    Optional
+)
 import os
 from os import path, PathLike
 import subprocess
@@ -11,6 +14,8 @@ import urllib.parse
 import logging
 import abc
 import io
+import contextlib
+import tempfile
 
 from ..__about__ import __version__, __name_public__
 from .cache import CacheMeta
@@ -29,6 +34,10 @@ class GitError(Exception):
     def __init__(self, *args: object, code: int = 1):
         super().__init__(*args)
         self._code = code
+
+    @staticmethod
+    def is_file_not_found_error(error: GitError) -> bool:
+        return re.search(r"path.+does not exist", str(error)) or re.search(r"pathspec.+did not match any files", str(error))
 
 
 class IllegalReCloneError(Exception):
@@ -168,7 +177,22 @@ class Commit(metaclass=CacheMeta):
             self.id
         )
 
-    def show(self, file: PathLike[str], *, text: bool = True) -> str | io.RawIOBase | io.BufferedIOBase:
+    def smudge(self, file: str) -> io.BytesIO:
+        if self._repository.is_lfs_installed:
+            pointer = self.read(file)
+
+            result = self._repository._git(
+                "lfs",
+                "smudge",
+                text=False,
+                input=pointer.encode("utf-8")
+            )
+
+            return io.BytesIO(result.stdout)
+        else:
+            return self.read(file, text=False)
+
+    def read(self, file: str, text: bool = True) -> str:
         file_rel = path.relpath(file, self._repository.dir)
 
         result = self._repository._git(
@@ -195,8 +219,17 @@ class Commit(metaclass=CacheMeta):
         return self.list_modified()
 
 
-class Repository():
+class BaseRepository():
     _dir: PathLike[str]
+
+    @property
+    def is_lfs_installed(self) -> bool:
+        try:
+            self._git("lfs", "version")
+        except GitError:
+            return False
+        else:
+            return True
 
     def __init__(self, dir: PathLike[str]) -> None:
         self._dir = path.abspath(dir)
@@ -210,6 +243,7 @@ class Repository():
             *args: str,
             env: dict[str, str] | None = None,
             cwd: str | None = None,
+            input: str | None = None,
             text: bool = True
     ) -> subprocess.CompletedProcess[str]:
 
@@ -223,7 +257,8 @@ class Repository():
             cwd=cwd or self.dir,
             capture_output=True,
             text=text,
-            env=env
+            env=env,
+            input=input
         )
 
         if result.returncode != 0:
@@ -237,20 +272,6 @@ class Repository():
         return result
 
     @property
-    def is_init(self) -> bool:
-        try:
-            result = self._git(
-                "rev-parse",
-                "--git-dir"
-            )
-
-            return result.stdout.strip() == ".git"
-        except GitError:
-            return False
-        except FileNotFoundError:
-            return False
-
-    @property
     def refs(self) -> list[str]:
         result = self._git("show-ref")
 
@@ -260,16 +281,6 @@ class Repository():
                 result.stdout.splitlines()
             )
         )
-
-    def init(self) -> bool:
-        if self.is_init:
-            return False
-
-        self._git(
-            "init"
-        )
-
-        return True
 
     def get_commit(self, ref: str) -> Commit | None:
         try:
@@ -289,11 +300,169 @@ class Repository():
     def head(self) -> Commit | None:
         return self.get_commit("HEAD")
 
+
+class BareRepository(BaseRepository):
+
+    @property
+    def is_init(self) -> bool:
+        try:
+            result = self._git(
+                "rev-parse",
+                "--git-dir"
+            )
+
+            return result.stdout.strip() == "."
+        except GitError:
+            return False
+        except FileNotFoundError:
+            return False
+
+    def init(self) -> bool:
+        if self.is_init:
+            return False
+
+        self._git("init", "--bare")
+
+        return True
+
+    @contextlib.contextmanager
+    def tempclone(self):
+        with tempfile.TemporaryDirectory() as dir:
+            repository = Repository(dir)
+            repository.clone(self.dir, fetch_lfs_files=False)
+
+            yield repository
+
+            repository.push()
+
+    def clone(self, dir: Optional[str] = None):
+        if dir is None:
+            dir = tempfile.mkdtemp()
+
+        repository = Repository(dir)
+        repository.clone(self.dir, fetch_lfs_files=False)
+
+        return repository
+
+
+class Repository(BaseRepository):
+
+    @property
+    def is_init(self) -> bool:
+        try:
+            result = self._git(
+                "rev-parse",
+                "--git-dir"
+            )
+
+            return result.stdout.strip() == ".git"
+        except GitError:
+            return False
+        except FileNotFoundError:
+            return False
+
+    def init(self) -> bool:
+        if self.is_init:
+            return False
+
+        self._git("init")
+
+        if self.is_lfs_installed:
+            self._git("lfs", "install")
+
+        return True
+
+    def lfs_track(self, file: str):
+        if self.is_lfs_installed:
+            self._git(
+                "lfs",
+                "track",
+                path.relpath(file, self.dir)
+            )
+
+    @property
+    def lfs_url(self) -> str | None:
+        if self.is_lfs_installed:
+            try:
+                lfs_url = self._git(
+                    "config",
+                    "-f",
+                    ".lfsconfig",
+                    "--get",
+                    "lfs.url"
+                )
+            except GitError as error:
+                if str(error).strip() == "":
+                    return None
+                else:
+                    raise error
+
+            if lfs_url.stdout.strip() == "":
+                return None
+            else:
+                return lfs_url.stdout.strip()
+
+    @lfs_url.setter
+    def lfs_url(self, value: str | None):
+        if self.is_lfs_installed:
+            if value is None:
+                self._git(
+                    "config",
+                    "-f",
+                    ".lfsconfig",
+                    "--unset",
+                    "lfs.url"
+                )
+            else:
+                self._git(
+                    "config",
+                    "-f",
+                    ".lfsconfig",
+                    "lfs.url",
+                    f"{value}"
+                )
+
     def add(self, *added_files: PathLike[str]):
         self._git(
             "add",
             *[path.relpath(modified_file, self.dir) for modified_file in added_files]
         )
+
+    def stage_lfs(self):
+        if self.is_lfs_installed:
+            if os.path.exists(os.path.join(self._dir, ".lfsconfig")):
+                self._git(
+                    "add",
+                    ".lfsconfig",
+                )
+            else:
+                try:
+                    self._git(
+                        "rm",
+                        ".lfsconfig",
+                    )
+                except GitError as error:
+                    if GitError.is_file_not_found_error(error):
+                        pass
+                    else:
+                        raise error
+
+            if os.path.exists(os.path.join(self._dir, ".gitattributes")):
+                self._git(
+                    "add",
+                    ".gitattributes",
+                )
+            else:
+                try:
+                    self._git(
+                        "rm",
+                        ".gitattributes",
+                    )
+                except GitError as error:
+                    if GitError.is_file_not_found_error(error):
+                        pass
+                    else:
+                        raise error
 
     def remove(self, *removed_files: PathLike[str]):
         self._git(
@@ -331,7 +500,7 @@ class Repository():
 
         return self.head
 
-    def clone(self, origin_url: str):
+    def clone(self, origin_url: str, fetch_lfs_files: bool = True):
         if self.is_init:
             raise IllegalReCloneError
 
@@ -340,8 +509,7 @@ class Repository():
         if mode.scheme == "file":
             self._git(
                 "clone",
-                path.join(origin_url, ".git") if path.split(
-                    self.dir)[1] != ".git" else origin_url,
+                origin_url,
                 path.split(self.dir)[1],
                 cwd=path.split(self.dir)[0]
             )
@@ -355,9 +523,31 @@ class Repository():
         else:
             raise UnsupportedCloneRemoteError(origin_url)
 
-    def pull(self):
+        if self.is_lfs_installed:
+            self._git("lfs", "install")
+
+            if fetch_lfs_files:
+                self._git(
+                    "lfs",
+                    "fetch",
+                    "--all"
+                )
+
+    def pull(self, fetch_lfs_files: bool = True):
         self._git(
             "pull"
+        )
+
+        if self.is_lfs_installed and fetch_lfs_files:
+            self._git(
+                "lfs",
+                "fetch",
+                "--all"
+            )
+
+    def push(self):
+        self._git(
+            "push"
         )
 
     def reset(self, ref: str = "HEAD", clean_modified_files: bool = False):
@@ -381,13 +571,28 @@ class Repository():
             "-d"
         )
 
-    def show(self, file: PathLike[str], *, text: bool = True) -> str | bytes:
+    def smudge(self, file: str) -> io.BytesIO:
+        if self.is_lfs_installed:
+            pointer = self.read(file)
+
+            result = self._git(
+                "lfs",
+                "smudge",
+                text=False,
+                input=pointer.encode("utf-8")
+            )
+
+            return io.BytesIO(result.stdout)
+        else:
+            return self.read(file, text=False)
+
+    def read(self, file: str, text: bool = True) -> str:
         file_rel = path.relpath(file, self.dir)
 
         result = self._git(
             "show",
             f":{file_rel}",
-            text=True
+            text=text
         )
 
         return result.stdout

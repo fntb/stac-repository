@@ -16,6 +16,7 @@ import os
 import orjson
 import io
 import re
+from contextlib import contextmanager
 
 from .git import (
     Commit,
@@ -31,10 +32,6 @@ from ..base_stac_commit import (
 
 if TYPE_CHECKING:
     from .git_stac_repository import GitStacRepository
-
-
-def is_file_not_found_error(error: GitError) -> bool:
-    return re.search(r"path.+does not exist", str(error))
 
 
 class GitStacCommit(BaseStacCommit):
@@ -86,9 +83,9 @@ class GitStacCommit(BaseStacCommit):
         os_href = os.path.abspath(href)
 
         try:
-            object_str = self._git_commit.show(os_href, text=True)
+            object_str = self._git_commit.read(os_href)
         except GitError as error:
-            if is_file_not_found_error(error):
+            if GitError.is_file_not_found_error(error):
                 raise FileNotFoundError from error
             else:
                 raise error
@@ -98,24 +95,24 @@ class GitStacCommit(BaseStacCommit):
         except orjson.JSONDecodeError as error:
             raise JSONObjectError from error
 
-    def get_asset(self, href: str) -> Iterator[io.RawIOBase | io.BufferedIOBase]:
+    @contextmanager
+    def get_asset(self, href: str) -> Iterator[io.RawIOBase]:
         href = self._assert_href_in_repository(href)
         os_href = os.path.abspath(href)
 
         try:
-            return self._git_commit.show(os_href, text=False)
+            yield self._git_commit.smudge(os_href)
         except GitError as error:
-            if is_file_not_found_error(error):
+            if GitError.is_file_not_found_error(error):
                 raise FileNotFoundError from error
             else:
                 raise error
 
     def rollback(self):
-        self._repository._git_repository.reset(self.id)
+        with self._repository._git_repository.tempclone() as concrete_git_repository:
+            concrete_git_repository.reset(self.id)
 
     def backup(self, backup_url: str):
-
-        # Backup by ref
         return NotImplemented
 
         mode = _urlparse(backup_url, "file").scheme

@@ -2,22 +2,17 @@ from __future__ import annotations
 
 from typing import (
     Optional,
-    Any,
     Dict
 )
 
-import configparser
-import urllib.parse
 import os
-import io
 import posixpath
-import datetime
-from typing import Iterator
 
 from ..__about__ import __version__, __name_public__
 
 from .git import (
     Repository,
+    BareRepository,
     RefNotFoundError
 )
 from .git_stac_commit import (
@@ -59,7 +54,7 @@ class GitStacRepository(BaseStacRepository):
     StacCommit = GitStacCommit
     StacTransaction = GitStacTransaction
 
-    _git_repository: Repository
+    _git_repository: BareRepository
     _lfs_config_file: str
     _base_href: str
 
@@ -73,7 +68,7 @@ class GitStacRepository(BaseStacRepository):
         validated_config = cls.validate_config(config)
 
         repository_dir = os.path.abspath(repository)
-        git_repository = Repository(repository_dir)
+        git_repository = BareRepository(repository_dir)
 
         if not os.path.isdir(repository_dir):
             os.makedirs(repository_dir, exist_ok=True)
@@ -86,44 +81,24 @@ class GitStacRepository(BaseStacRepository):
 
         git_repository.init()
 
-        if git_repository.modified_files:
-            raise RepositoryAlreadyInitializedError(f"{repository_dir} is not empty")
+        with git_repository.tempclone() as concrete_git_repository:
+            concrete_git_repository_dir = concrete_git_repository.dir
 
-        gitignore_file = os.path.join(repository_dir, ".gitignore")
-        gitattributes_file = os.path.join(repository_dir, ".gitattributes")
-        lfsconfig_file = os.path.join(repository_dir, ".lfsconfig")
+            gitignore_file = os.path.join(concrete_git_repository_dir, ".gitignore")
 
-        root_catalog.self_href = posixpath.join(posixpath.abspath(repository_dir), "catalog.json")
-        save(root_catalog)
+            root_catalog.self_href = posixpath.join(posixpath.abspath(concrete_git_repository_dir), "catalog.json")
+            save(root_catalog)
 
-        git_repository.add(os.path.abspath(root_catalog.self_href))
+            concrete_git_repository.add(os.path.abspath(root_catalog.self_href))
 
-        if validated_config is not None and validated_config.git_lfs_url is not None:
-            with open(lfsconfig_file, "w") as file:
-                file.write((
-                    "[lfs]\n"
-                    f"  url = {validated_config.git_lfs_url}"
-                ))
-        else:
-            open(lfsconfig_file, "w").close()
+            if validated_config is not None and validated_config.git_lfs_url is not None:
+                concrete_git_repository.lfs_url = validated_config.git_lfs_url
+                concrete_git_repository.stage_lfs()
 
-        open(gitignore_file, "w").close()
+            open(gitignore_file, "w").close()
+            concrete_git_repository.add(gitignore_file)
 
-        with open(gitattributes_file, "w") as file:
-            file.write((
-                "*\n"
-                "!*.json\n"
-                "!*/\n"
-                "!/.gitignore\n"
-                "!/.gitattributes\n"
-                "!/.lfsconfig\n"
-            ))
-
-        git_repository.add(gitignore_file)
-        git_repository.add(lfsconfig_file)
-        git_repository.add(gitattributes_file)
-
-        git_repository.commit("Initialize repository")
+            concrete_git_repository.commit("Initialize repository")
 
         return cls(repository_dir)
 
@@ -137,13 +112,10 @@ class GitStacRepository(BaseStacRepository):
         if not os.path.isdir(repository_dir):
             raise RepositoryNotFoundError
 
-        self._git_repository = Repository(repository_dir)
+        self._git_repository = BareRepository(repository_dir)
 
         if not self._git_repository.is_init:
             raise RepositoryNotFoundError(f"{repository_dir} is not a git repository")
-
-        if self._git_repository.modified_files:
-            self._git_repository.reset(clean_modified_files=True)
 
     def set_config(
         self,
@@ -152,40 +124,18 @@ class GitStacRepository(BaseStacRepository):
     ):
         validated_config_value = self.validate_config_option(config_key, config_value)
 
-        lfsconfig_file = os.path.join(os.path.abspath(self._base_href), ".lfsconfig")
+        with self._git_repository.tempclone() as concrete_git_repository:
+            match config_key:
+                case "git_lfs_url":
+                    concrete_git_repository.lfs_url = validated_config_value
+                    concrete_git_repository.stage_lfs()
+                case _:
+                    raise NotImplementedError
 
-        match config_key:
-            case "git_lfs_url":
-                lfsconfig_file = os.path.join(os.path.abspath(self._base_href), ".lfsconfig")
-
-                if validated_config_value is not None:
-                    with open(lfsconfig_file, "w") as file:
-                        file.write((
-                            "[lfs]\n"
-                            f"  url = {validated_config_value}"
-                        ))
-                else:
-                    open(lfsconfig_file, "w").close()
-            case _:
-                raise NotImplementedError
-
-        self._git_repository.add(lfsconfig_file)
-        self._git_repository.commit(f"Change configuration option \"{config_key}\"")
+            concrete_git_repository.commit(f"Change configuration option \"{config_key}\"")
 
     def get_config(self):
-        lfsconfig_file = os.path.join(os.path.abspath(self._base_href), ".lfsconfig")
-
-        with open(lfsconfig_file, "r") as lfsconfig_stream:
-            lfsconfig_str = lfsconfig_stream.read()
-
-        lfsconfig = configparser.ConfigParser()
-        lfsconfig.read_string("\n".join([line.strip() for line in lfsconfig_str.splitlines()]))
-
-        try:
-            git_lfs_url = lfsconfig["lfs"]["url"]
-        except KeyError:
-            git_lfs_url = None
-
-        return GitStacConfig(
-            git_lfs_url=git_lfs_url
-        )
+        with self._git_repository.tempclone() as concrete_git_repository:
+            return GitStacConfig(
+                git_lfs_url=concrete_git_repository.lfs_url
+            )
