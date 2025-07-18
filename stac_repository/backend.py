@@ -1,7 +1,12 @@
 from typing import (
-    Protocol,
     Type,
 )
+import sys
+
+if sys.version_info >= (3, 9):
+    from typing import Protocol
+else:
+    from typing_extensions import Protocol
 
 from .base_stac_repository import BaseStacRepository
 

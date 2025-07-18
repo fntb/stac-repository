@@ -3,14 +3,13 @@ from __future__ import annotations
 from typing import (
     Protocol,
     Any,
-    Optional
+    Optional,
+    Iterator,
+    BinaryIO,
 )
 
-from contextlib import (
-    AbstractContextManager
-)
+from contextlib import contextmanager
 
-import io
 import os
 import orjson
 from urllib.parse import urlparse as _urlparse
@@ -44,7 +43,8 @@ class ReadableStacIO(Protocol):
         """
         ...
 
-    def get_asset(self, href: str) -> AbstractContextManager[io.RawIOBase | io.BufferedIOBase]:
+    @contextmanager
+    def get_asset(self, href: str) -> Iterator[BinaryIO]:
         """Reads a binary Object.
 
         This method is intended to retrieve Asset files.
@@ -74,7 +74,7 @@ class StacIO(ReadableStacIO):
         """
         ...
 
-    def set_asset(self, href: str, value: io.RawIOBase | io.BufferedIOBase):
+    def set_asset(self, href: str, value: BinaryIO):
         """(Over)writes a binary Object.
 
         This method is intended to save Asset files.
@@ -120,11 +120,13 @@ class DefaultReadableStacIO(ReadableStacIO):
             except orjson.JSONDecodeError as error:
                 raise JSONObjectError from error
 
-    def get_asset(self, href: str) -> AbstractContextManager[io.RawIOBase | io.BufferedIOBase]:
+    @contextmanager
+    def get_asset(self, href: str) -> Iterator[BinaryIO]:
         href = self._assert_href_in_repository(href)
         os_href = os.path.abspath(href)
 
-        return open(os_href, "r+b")
+        with open(os_href, "r+b") as asset_stream:
+            yield asset_stream
 
 
 class DefaultStacIO(DefaultReadableStacIO, StacIO):
@@ -142,7 +144,7 @@ class DefaultStacIO(DefaultReadableStacIO, StacIO):
             except orjson.JSONEncodeError as error:
                 raise JSONObjectError from error
 
-    def set_asset(self, href: str, value: io.RawIOBase | io.BufferedIOBase):
+    def set_asset(self, href: str, value: BinaryIO):
         href = self._assert_href_in_repository(href)
         os_href = os.path.abspath(href)
 

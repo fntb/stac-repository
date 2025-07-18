@@ -1,10 +1,19 @@
-from os import PathLike
-from typing import Protocol, Iterator
+from typing import (
+    Iterator,
+    ClassVar
+)
+
+import sys
+
+if sys.version_info >= (3, 9):
+    from typing import Protocol
+else:
+    from typing_extensions import Protocol
 
 
 class Processor(Protocol):
 
-    __version__: str
+    __version__: ClassVar[str]
 
     @staticmethod
     def discover(source: str) -> Iterator[str]:
@@ -17,7 +26,7 @@ class Processor(Protocol):
             _Yields product sources, typically uris or file paths_
         """
 
-        pass
+        raise NotImplementedError
 
     @staticmethod
     def id(product_source: str) -> str:
@@ -30,7 +39,7 @@ class Processor(Protocol):
             _The product id_
         """
 
-        pass
+        raise NotImplementedError
 
     @staticmethod
     def version(product_source: str) -> str:
@@ -43,10 +52,10 @@ class Processor(Protocol):
             _The product version_
         """
 
-        pass
+        raise NotImplementedError
 
     @staticmethod
-    def process(product_source: str) -> PathLike[str]:
+    def process(product_source: str) -> str:
         """_Process a product into a STAC object (item, collection, or even catalog)_
 
         Args:
@@ -56,4 +65,4 @@ class Processor(Protocol):
             _The path to the processed STAC object_
         """
 
-        pass
+        raise NotImplementedError

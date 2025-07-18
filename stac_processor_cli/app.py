@@ -1,6 +1,15 @@
 from typing import (
-    Annotated,
+    Optional
 )
+
+import sys
+
+if sys.version_info >= (3, 9):
+    from typing import Annotated
+else:
+    from typing_extensions import Annotated
+
+
 import logging
 
 from types import (
@@ -28,7 +37,7 @@ logging.basicConfig(
 
 
 def get_processor(processor_id: str) -> Processor:
-    processor: Processor = discovered_processors.get(processor_id)
+    processor: Optional[Processor] = discovered_processors.get(processor_id)
 
     if processor is None:
         rich.console.Console(stderr=True).print(f"Processor {processor_id} not found.")

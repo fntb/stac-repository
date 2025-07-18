@@ -1,21 +1,34 @@
 from __future__ import annotations
 from typing import (
-    Optional
+    Optional,
+    overload,
+    Literal,
+    BinaryIO,
+    Union,
+    cast
 )
 import os
-from os import path, PathLike
+import io
 import subprocess
 from typing import NamedTuple
 import datetime
 import re
-from functools import cache, cached_property
+from functools import cached_property
 import urllib
 import urllib.parse
 import logging
 import abc
-import io
 import contextlib
 import tempfile
+import sys
+
+if sys.version_info >= (3, 9):
+    from functools import cache
+else:
+    from functools import lru_cache
+
+    def cache(user_function, /):
+        return lru_cache(maxsize=None)(user_function)
 
 from ..__about__ import __version__, __name_public__
 from .cache import CacheMeta
@@ -37,7 +50,12 @@ class GitError(Exception):
 
     @staticmethod
     def is_file_not_found_error(error: GitError) -> bool:
-        return re.search(r"path.+does not exist", str(error)) or re.search(r"pathspec.+did not match any files", str(error))
+        if re.search(r"path.+does not exist", str(error)) is not None:
+            return True
+        elif re.search(r"pathspec.+did not match any files", str(error)) is not None:
+            return True
+        else:
+            return False
 
 
 class IllegalReCloneError(Exception):
@@ -82,9 +100,9 @@ class Signature(NamedTuple):
 class Commit(metaclass=CacheMeta):
 
     _id: str
-    _repository: Repository
+    _repository: BaseRepository
 
-    def __init__(self, repository: Repository, id: str):
+    def __init__(self, repository: BaseRepository, id: str):
         self._repository = repository
         self._id = id
 
@@ -157,7 +175,7 @@ class Commit(metaclass=CacheMeta):
         return result.stdout.strip()
 
     @cached_property
-    def parent(self) -> Commit | None:
+    def parent(self) -> Optional[Commit]:
         result = self._repository._git(
             "rev-list",
             self._id
@@ -167,7 +185,7 @@ class Commit(metaclass=CacheMeta):
 
         return Commit(self._repository, parent_ids[0]) if parent_ids else None
 
-    def tag(self, tag: str, message: str | None = None):
+    def tag(self, tag: str, message: Optional[str] = None):
         self._repository._git(
             "tag",
             "-a",
@@ -177,7 +195,7 @@ class Commit(metaclass=CacheMeta):
             self.id
         )
 
-    def smudge(self, file: str) -> io.BytesIO:
+    def smudge(self, file: str) -> BinaryIO:
         if self._repository.is_lfs_installed:
             pointer = self.read(file)
 
@@ -190,10 +208,18 @@ class Commit(metaclass=CacheMeta):
 
             return io.BytesIO(result.stdout)
         else:
-            return self.read(file, text=False)
+            return io.BytesIO(self.read(file, text=False))
 
-    def read(self, file: str, text: bool = True) -> str:
-        file_rel = path.relpath(file, self._repository.dir)
+    @overload
+    def read(self, file: str, text: Literal[True] = True) -> str:
+        ...
+
+    @overload
+    def read(self, file: str, text: Literal[False]) -> bytes:
+        ...
+
+    def read(self, file: str, text: bool = True) -> Union[str, bytes]:
+        file_rel = os.path.relpath(file, self._repository.dir)
 
         result = self._repository._git(
             "show",
@@ -204,7 +230,7 @@ class Commit(metaclass=CacheMeta):
         return result.stdout
 
     @cache
-    def list_modified(self) -> list[PathLike[str]]:
+    def list_modified(self) -> list[str]:
         result = self._repository._git(
             "show",
             "--format=",
@@ -212,15 +238,15 @@ class Commit(metaclass=CacheMeta):
             self._id
         )
 
-        return [path.join(self._repository.dir, file_name) for file_name in result.stdout.strip().splitlines()]
+        return [os.path.join(self._repository.dir, file_name) for file_name in result.stdout.strip().splitlines()]
 
     @cached_property
-    def modified_files(self) -> list[PathLike[str]]:
+    def modified_files(self) -> list[str]:
         return self.list_modified()
 
 
 class BaseRepository():
-    _dir: PathLike[str]
+    _dir: str
 
     @property
     def is_lfs_installed(self) -> bool:
@@ -231,21 +257,43 @@ class BaseRepository():
         else:
             return True
 
-    def __init__(self, dir: PathLike[str]) -> None:
-        self._dir = path.abspath(dir)
+    def __init__(self, dir: str) -> None:
+        self._dir = os.path.abspath(dir)
 
     @property
     def dir(self):
         return self._dir
 
+    @overload
     def _git(
             self,
             *args: str,
-            env: dict[str, str] | None = None,
-            cwd: str | None = None,
-            input: str | None = None,
-            text: bool = True
+            text: Literal[True] = True,
+            env: Optional[dict[str, str]] = None,
+            cwd: Optional[str] = None,
+            input: Optional[Union[str, bytes]] = None,
     ) -> subprocess.CompletedProcess[str]:
+        ...
+
+    @overload
+    def _git(
+            self,
+            *args: str,
+            text: Literal[False],
+            env: Optional[dict[str, str]] = None,
+            cwd: Optional[str] = None,
+            input: Optional[Union[str, bytes]] = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        ...
+
+    def _git(
+            self,
+            *args: str,
+            env: Optional[dict[str, str]] = None,
+            cwd: Optional[str] = None,
+            input: Optional[Union[str, bytes]] = None,
+            text: bool = True
+    ) -> Union[subprocess.CompletedProcess[str], subprocess.CompletedProcess[bytes]]:
 
         _logger.debug("git " + " ".join(args))
 
@@ -282,7 +330,7 @@ class BaseRepository():
             )
         )
 
-    def get_commit(self, ref: str) -> Commit | None:
+    def get_commit(self, ref: str) -> Optional[Commit]:
         try:
             result = self._git(
                 "rev-parse",
@@ -293,11 +341,11 @@ class BaseRepository():
         except GitError:
             return None
 
-    def __getitem__(self, ref: str) -> Commit | None:
+    def __getitem__(self, ref: str) -> Optional[Commit]:
         return self.get_commit(ref)
 
     @property
-    def head(self) -> Commit | None:
+    def head(self) -> Optional[Commit]:
         return self.get_commit("HEAD")
 
 
@@ -377,11 +425,11 @@ class Repository(BaseRepository):
             self._git(
                 "lfs",
                 "track",
-                path.relpath(file, self.dir)
+                os.path.relpath(file, self.dir)
             )
 
     @property
-    def lfs_url(self) -> str | None:
+    def lfs_url(self) -> Optional[str]:
         if self.is_lfs_installed:
             try:
                 lfs_url = self._git(
@@ -403,7 +451,7 @@ class Repository(BaseRepository):
                 return lfs_url.stdout.strip()
 
     @lfs_url.setter
-    def lfs_url(self, value: str | None):
+    def lfs_url(self, value: Optional[str]):
         if self.is_lfs_installed:
             if value is None:
                 self._git(
@@ -422,10 +470,10 @@ class Repository(BaseRepository):
                     f"{value}"
                 )
 
-    def add(self, *added_files: PathLike[str]):
+    def add(self, *added_files: str):
         self._git(
             "add",
-            *[path.relpath(modified_file, self.dir) for modified_file in added_files]
+            *[os.path.relpath(modified_file, self.dir) for modified_file in added_files]
         )
 
     def stage_lfs(self):
@@ -464,10 +512,10 @@ class Repository(BaseRepository):
                     else:
                         raise error
 
-    def remove(self, *removed_files: PathLike[str]):
+    def remove(self, *removed_files: str):
         self._git(
             "rm",
-            *[path.relpath(modified_file, self.dir) for modified_file in removed_files]
+            *[os.path.relpath(modified_file, self.dir) for modified_file in removed_files]
         )
 
     def stage_all(self):
@@ -498,7 +546,7 @@ class Repository(BaseRepository):
             }
         )
 
-        return self.head
+        return cast(Commit, self.head)
 
     def clone(self, origin_url: str, fetch_lfs_files: bool = True):
         if self.is_init:
@@ -510,15 +558,15 @@ class Repository(BaseRepository):
             self._git(
                 "clone",
                 origin_url,
-                path.split(self.dir)[1],
-                cwd=path.split(self.dir)[0]
+                os.path.split(self.dir)[1],
+                cwd=os.path.split(self.dir)[0]
             )
         elif mode.scheme == "ssh":
             self._git(
                 "clone",
                 origin_url,
-                path.split(self.dir)[1],
-                cwd=path.split(self.dir)[0]
+                os.path.split(self.dir)[1],
+                cwd=os.path.split(self.dir)[0]
             )
         else:
             raise UnsupportedCloneRemoteError(origin_url)
@@ -571,7 +619,7 @@ class Repository(BaseRepository):
             "-d"
         )
 
-    def smudge(self, file: str) -> io.BytesIO:
+    def smudge(self, file: str) -> BinaryIO:
         if self.is_lfs_installed:
             pointer = self.read(file)
 
@@ -584,10 +632,18 @@ class Repository(BaseRepository):
 
             return io.BytesIO(result.stdout)
         else:
-            return self.read(file, text=False)
+            return io.BytesIO(self.read(file, text=False))
 
-    def read(self, file: str, text: bool = True) -> str:
-        file_rel = path.relpath(file, self.dir)
+    @overload
+    def read(self, file: str, text: Literal[True] = True) -> str:
+        ...
+
+    @overload
+    def read(self, file: str, text: Literal[False]) -> bytes:
+        ...
+
+    def read(self, file: str, text: bool = True) -> Union[str, bytes]:
+        file_rel = os.path.relpath(file, self.dir)
 
         result = self._git(
             "show",
@@ -597,43 +653,15 @@ class Repository(BaseRepository):
 
         return result.stdout
 
-    def list_modified(self) -> list[PathLike[str]]:
+    def list_modified(self) -> list[str]:
         result = self._git(
             "ls-files",
             "--others",
             "--exclude-standard"
         )
 
-        return [path.join(self.dir, file_name) for file_name in result.stdout.strip().splitlines()]
+        return [os.path.join(self.dir, file_name) for file_name in result.stdout.strip().splitlines()]
 
     @property
-    def modified_files(self) -> list[PathLike[str]]:
+    def modified_files(self) -> list[str]:
         return self.list_modified()
-
-
-class AbstractTagStrategy(abc.ABC):
-
-    @abc.abstractmethod
-    def make(repository: Repository) -> str:
-        raise NotImplementedError
-
-
-class IncrementalTagStrategy(AbstractTagStrategy):
-
-    _tag: str
-
-    def __init__(self, tag: str) -> None:
-        self._tag = tag
-
-    def make(self, repository: Repository):
-
-        n = len(
-            filter(
-                lambda ref: ref.startswith(self._tag),
-                repository.refs
-            )
-        )
-
-        tag = f"{self._tag}-{n}"
-
-        return tag

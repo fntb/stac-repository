@@ -1,11 +1,12 @@
 from typing import (
-    Iterator
+    Iterator,
+    ClassVar
 )
 
 import os
-from os import PathLike
 import mimetypes
 import uuid
+import logging
 
 
 from .stac import (
@@ -17,10 +18,12 @@ from .stac import (
 
 from .processor import Processor
 
+logger = logging.getLogger(__file__)
+
 
 class StacProcessor(Processor):
 
-    __version__ = "0.0.1"
+    __version__: ClassVar[str] = "0.0.1"
 
     @staticmethod
     def discover(source: str) -> Iterator[str]:
@@ -32,7 +35,8 @@ class StacProcessor(Processor):
 
             try:
                 load(file)
-            except StacObjectError:
+            except StacObjectError as error:
+                logger.info(f"Skipped {file} : {str(error)}")
                 return False
 
             return True
@@ -60,9 +64,10 @@ class StacProcessor(Processor):
         try:
             return get_version(load(product_source))
         except VersionNotFoundError as error:
+            logger.info(f"No version found {product_source}, generating random")
             return uuid.uuid4().hex
 
     @staticmethod
-    def process(product_source: str) -> PathLike[str]:
+    def process(product_source: str) -> str:
         product_source = os.path.abspath(product_source)
         return os.path.abspath(product_source)

@@ -1,10 +1,12 @@
 from typing import (
     Any,
+    Optional,
+    Union,
+    BinaryIO,
     TYPE_CHECKING
 )
 
 import os
-import io
 import glob
 
 from stac_repository.base_stac_transaction import (
@@ -30,14 +32,14 @@ class FileStacTransaction(DefaultStacIO, BaseStacTransaction):
     def _rename_suffixed_files(self, suffix: str):
         root_dir = os.path.abspath(self._base_href)
 
-        for file in glob.iglob(f"**/*.{suffix}", root_dir=root_dir, recursive=True, include_hidden=True):
-            os.rename(os.path.join(root_dir, file), os.path.join(root_dir, file)[:-len(f".{suffix}")])
+        for file in glob.iglob(os.path.join(root_dir, "**", f"*.{suffix}"), recursive=True):
+            os.rename(file, file[:-len(f".{suffix}")])
 
     def _remove_suffixed_files(self, suffix: str):
         root_dir = os.path.abspath(self._base_href)
 
-        for file in glob.iglob(f"**/*.{suffix}", root_dir=root_dir, recursive=True, include_hidden=True):
-            os.remove(os.path.join(root_dir, file))
+        for file in glob.iglob(os.path.join(root_dir, "**", f"*.{suffix}"), recursive=True):
+            os.remove(file)
 
     def _remove_empty_directories(self):
         root_dir = os.path.abspath(self._base_href)
@@ -82,7 +84,7 @@ class FileStacTransaction(DefaultStacIO, BaseStacTransaction):
         self._remove_empty_directories()
         self._unlock()
 
-    def commit(self, *, message: str | None = None):
+    def commit(self, *, message: Optional[str] = None):
         self._rename_suffixed_files("tmp")
         self._remove_suffixed_files("bck")
         self._remove_empty_directories()
@@ -121,5 +123,5 @@ class FileStacTransaction(DefaultStacIO, BaseStacTransaction):
         except FileNotFoundError:
             pass
 
-    def set_asset(self, href: str, asset: io.RawIOBase | io.BufferedIOBase):
-        return super().set_asset(f"{href}.tmp", asset)
+    def set_asset(self, href: str, value: BinaryIO):
+        return super().set_asset(f"{href}.tmp", value)

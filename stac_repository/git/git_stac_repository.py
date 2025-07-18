@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import (
     Optional,
-    Dict
+    Dict,
+    cast
 )
 
 import os
@@ -65,7 +66,7 @@ class GitStacRepository(BaseStacRepository):
         root_catalog: Catalog,
         config: Optional[Dict[str, str]] = None
     ) -> GitStacRepository:
-        validated_config = cls.validate_config(config)
+        validated_config = cast(GitStacConfig, cls.validate_config(config))
 
         repository_dir = os.path.abspath(repository)
         git_repository = BareRepository(repository_dir)
@@ -125,12 +126,11 @@ class GitStacRepository(BaseStacRepository):
         validated_config_value = self.validate_config_option(config_key, config_value)
 
         with self._git_repository.tempclone() as concrete_git_repository:
-            match config_key:
-                case "git_lfs_url":
-                    concrete_git_repository.lfs_url = validated_config_value
-                    concrete_git_repository.stage_lfs()
-                case _:
-                    raise NotImplementedError
+            if config_key == "git_lfs_url":
+                concrete_git_repository.lfs_url = validated_config_value
+                concrete_git_repository.stage_lfs()
+            else:
+                raise NotImplementedError
 
             concrete_git_repository.commit(f"Change configuration option \"{config_key}\"")
 

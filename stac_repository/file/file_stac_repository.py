@@ -1,3 +1,7 @@
+from typing import (
+    Dict,
+    Optional
+)
 
 import os
 import posixpath
@@ -29,7 +33,10 @@ class FileStacRepository(BaseStacRepository):
         cls,
         repository: str,
         root_catalog: Catalog,
+        config: Optional[Dict[str, str]] = None
     ):
+        cls.validate_config(config)
+
         repository_dir = os.path.abspath(repository)
 
         if not os.path.isdir(repository_dir):

@@ -1,12 +1,12 @@
 from __future__ import annotations
 from typing import (
     Optional,
-    TYPE_CHECKING
+    TYPE_CHECKING,
+    Union,
+    Type,
+    Literal
 )
 
-from types import (
-    NotImplementedType
-)
 
 import os
 import datetime
@@ -53,32 +53,32 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
         raise NotImplementedError
 
     @property
-    def message(self) -> str | NotImplementedType:
-        return NotImplemented
+    def message(self) -> Union[str, Type[NotImplementedError]]:
+        return NotImplementedError
 
     @property
     @abstractmethod
-    def parent(self) -> BaseStacCommit | None:
+    def parent(self) -> Optional[BaseStacCommit]:
         raise NotImplementedError
 
-    def rollback(self) -> Optional[NotImplementedType]:
+    def rollback(self) -> Optional[Type[NotImplementedError]]:
         """Rollback the repository to this commit.
 
         Returns:
-            NotImplemented: If the concrete implementation does not support rollbacks.
+            NotImplementedError: If the concrete implementation does not support rollbacks.
         """
-        return NotImplemented
+        return NotImplementedError
 
-    def backup(self, backup_url: str) -> Optional[NotImplementedType]:
+    def backup(self, backup_url: str) -> Optional[Type[NotImplementedError]]:
         """Backup the repository as it was in this commit.
 
         Returns:
-            NotImplemented: If the concrete implementation does not support backups.
+            NotImplementedError: If the concrete implementation does not support backups.
 
         Raises:
             BackupValueError: If the backup_url is not valid
         """
-        return NotImplemented
+        return NotImplementedError
 
     def export(self, export_dir: str):
         """Exports the catalog as it was in this commit.
@@ -90,13 +90,12 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
         export(
             self._catalog_href,
             file=os.path.join(os.path.abspath(export_dir), "catalog.json"),
-            store=self
         )
 
     def search(
         self,
         id: str
-    ) -> Item | Collection | Catalog | None:
+    ) -> Optional[Union[Item, Collection, Catalog]]:
         """Searches the object with `id` in the commit catalog.
         """
         return search(

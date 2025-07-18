@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import (
     Optional,
+    Union,
     TYPE_CHECKING
 )
 
@@ -157,13 +158,14 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
 
         set_parent(product, parent)
 
-        last_ancestor: Item | Collection | Catalog = parent
+        last_ancestor: Union[Item, Collection, Catalog] = parent
         while True:
-            try:
-                last_ancestor.extent = compute_extent(last_ancestor, store=self)
-            except StacObjectError as error:
-                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
-                break
+            if isinstance(last_ancestor, Collection):
+                try:
+                    last_ancestor.extent = compute_extent(last_ancestor, store=self)
+                except StacObjectError as error:
+                    logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                    break
 
             try:
                 ancestor = load_parent(
@@ -216,13 +218,14 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         unset_parent(product)
         delete(product, store=self)
 
-        last_ancestor: Item | Collection | Catalog = parent
+        last_ancestor: Union[Item, Collection, Catalog] = parent
         while True:
-            try:
-                last_ancestor.extent = compute_extent(last_ancestor, store=self)
-            except StacObjectError as error:
-                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
-                break
+            if isinstance(last_ancestor, Collection):
+                try:
+                    last_ancestor.extent = compute_extent(last_ancestor, store=self)
+                except StacObjectError as error:
+                    logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                    break
 
             try:
                 ancestor = load_parent(

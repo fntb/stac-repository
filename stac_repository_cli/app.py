@@ -1,15 +1,24 @@
 from typing import (
-    Annotated,
     Optional,
     List,
-    Tuple
+    Tuple,
+    cast
 )
+
+import sys
+
+if sys.version_info >= (3, 9):
+    from typing import Annotated
+else:
+    from typing_extensions import Annotated
+
 
 from types import (
     SimpleNamespace
 )
 
 import logging
+import os
 
 import typer
 
@@ -81,7 +90,7 @@ def get_backend(
 
 def init_repository(
     backend_id: str,
-    repository: str | None,
+    repository: Optional[str],
     root_catalog: Catalog,
     debug: bool = False
 ) -> BaseStacRepository:
@@ -103,7 +112,7 @@ def init_repository(
 
 def load_repository(
     backend_id: str,
-    repository: str | None,
+    repository: Optional[str],
     debug: bool = False
 ) -> BaseStacRepository:
     if repository is None:
@@ -188,52 +197,55 @@ def init(
 ):
     """Initializes the repository.
     """
-    root_catalog_instance: Catalog
+    def read_root_catalog(root_catalog_file: str) -> Catalog:
+        root_catalog_file = os.path.abspath(root_catalog_file)
 
-    if not root_catalog:
+        try:
+            with open(root_catalog_file, "r") as catalog_stream:
+                return Catalog.model_validate_json(catalog_stream.read(), context=root_catalog_file)
+        except ValidationError as error:
+            print_error(f"Cannot instanciate catalog", error=error)
+            print(f"\n{style_indent(str(error))}")
+            raise typer.Exit(1)
+        except Exception as error:
+            print_error(f"Cannot instanciate catalog {root_catalog_file}", error=error, no_traceback=not debug)
+            raise typer.Exit(1)
+
+    def prompt_root_catalog() -> Catalog:
+        id = prompt.Prompt.ask("id", default="root")
+        title = prompt.Prompt.ask("title")
+        description = prompt.Prompt.ask("description")
+        license = prompt.Prompt.ask("license", default="proprietary")
+
+        try:
+            return Catalog.model_validate({
+                "type": "Catalog",
+                "id": id,
+                "description": description,
+                "stac_version": "1.0.0",
+                "links": [],
+                "title": title,
+                "license": license,
+            }, context="/dev/null")
+        except ValidationError as error:
+            print_error(f"Cannot create catalog", error=error)
+            print(f"\n{style_indent(str(error))}")
+            raise typer.Exit(1)
+
+    if root_catalog is None:
         root_catalog = prompt.Prompt.ask(
             "Initialize from an existing root catalog file ?",
             default="Leave blank to use the interactive initializer"
         )
 
         if root_catalog == "Leave blank to use the interactive initializer":
-            root_catalog = None
+            _root_catalog = prompt_root_catalog()
+        else:
+            _root_catalog = read_root_catalog(root_catalog)
+    else:
+        _root_catalog = read_root_catalog(root_catalog)
 
-            id = prompt.Prompt.ask("id", default="root")
-            title = prompt.Prompt.ask("title")
-            description = prompt.Prompt.ask("description")
-            license = prompt.Prompt.ask("license", default="proprietary")
-
-            try:
-                root_catalog_instance = Catalog.model_validate({
-                    "type": "Catalog",
-                    "id": id,
-                    "description": description,
-                    "stac_version": "1.0.0",
-                    "links": [],
-                    "title": title,
-                    "license": license,
-                }, context="/dev/null")
-            except ValidationError as error:
-                print_error(f"Cannot create catalog", error=error)
-                print(f"\n{style_indent(str(error))}")
-                raise typer.Exit(1)
-
-            print(root_catalog_instance.model_dump())
-
-    if root_catalog:
-        try:
-            with open(root_catalog, "r") as catalog_stream:
-                root_catalog_instance = Catalog.model_validate_json(catalog_stream, context=root_catalog)
-        except ValidationError as error:
-            print_error(f"Cannot instanciate catalog", error=error)
-            print(f"\n{style_indent(str(error))}")
-            raise typer.Exit(1)
-        except Exception as error:
-            print_error(f"Cannot instanciate catalog {root_catalog}", error=error, no_traceback=not debug)
-            raise typer.Exit(1)
-
-        print(root_catalog_instance.model_dump())
+    print(_root_catalog.model_dump())
 
     if not prompt.Confirm.ask("Use as root catalog ?", default=False):
         return
@@ -241,7 +253,7 @@ def init(
     init_repository(
         backend_id=context.obj.backend,
         repository=context.obj.repository,
-        root_catalog=root_catalog_instance,
+        root_catalog=_root_catalog,
         debug=debug
     )
 
@@ -285,7 +297,7 @@ def ingest(
         )
     ] = None,
     processor: Annotated[
-        Optional[str],
+        str,
         typer.Option(
             help="Processor (if any) to use to discover and ingest products"
         )
@@ -339,7 +351,7 @@ def ingest(
 @app.command()
 def prune(
     context: typer.Context,
-    product_ids: list[str],
+    product_ids: List[str],
     debug: bool = False
 ):
     """Removes some products from the catalog.

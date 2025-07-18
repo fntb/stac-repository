@@ -7,12 +7,12 @@ from typing import (
     Type,
     List,
     Dict,
-    Any
+    Union,
+    Any,
 )
 
-from types import (
-    NotImplementedType
-)
+import sys
+
 
 from abc import (
     abstractmethod,
@@ -85,9 +85,9 @@ class ProcessorNotFoundError(ValueError):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.add_note(
-            "Processors : " + (", ".join(discovered_processors.keys()) or "-")
-        )
+
+        if sys.version_info >= (3, 11):
+            self.add_note("Processors : " + (", ".join(discovered_processors.keys()) or "-"))
 
 
 class ProcessingError(Exception):
@@ -132,7 +132,7 @@ class BaseStacRepository(metaclass=ABCMeta):
     def validate_config(
         cls,
         config: Optional[Dict[str, str]] = None
-    ) -> BaseModel | None:
+    ) -> Optional[BaseModel]:
         if cls.StacConfig is not None and config is not None:
             try:
                 return cls.StacConfig.model_validate(config)
@@ -195,7 +195,7 @@ class BaseStacRepository(metaclass=ABCMeta):
         self,
         config_key: str,
         config_value: str
-    ):
+    ) -> None:
         raise ConfigError("Configuration not available")
 
     @property
@@ -207,7 +207,7 @@ class BaseStacRepository(metaclass=ABCMeta):
         while (commit := commit.parent) is not None:
             yield commit
 
-    def get_commit(self, ref: str | datetime.datetime | int) -> BaseStacCommit:
+    def get_commit(self, ref: Union[str, datetime.datetime, int]) -> BaseStacCommit:
         """Get a commit matching some ref. Either the commit id, its index from the most recent commit, or the most recent commit before some date.
 
         Raises:
@@ -321,7 +321,7 @@ class BaseStacRepository(metaclass=ABCMeta):
             RootCatalogError: Product has the same id as the root and would thus replace it
             Dict[str, Exception]: Map of source/product_source to Exceptions (any of the above)
         """
-        processor: Processor = discovered_processors.get(processor_id)
+        processor: Optional[Processor] = discovered_processors.get(processor_id)
 
         if processor is None:
             raise ProcessorNotFoundError(processor_id)

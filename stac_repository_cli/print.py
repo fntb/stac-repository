@@ -5,7 +5,11 @@ from typing import (
     Optional,
     Tuple,
     Type,
+    Union,
+    cast
 )
+
+import sys
 
 import traceback
 
@@ -25,7 +29,14 @@ from stac_repository import (
 from stac_repository.stac import get_version as _get_version
 
 
-def style_indent(s: str | List[str]) -> str:
+def format_exception(error: BaseException) -> List[str]:
+    if sys.version_info >= (3, 10):
+        return traceback.format_exception(error)
+    else:
+        return traceback.format_exception(type(error), error, error.__traceback__)
+
+
+def style_indent(s: Union[str, List[str]]) -> str:
     return "   " + "\n   ".join(s.splitlines() if isinstance(s, str) else s)
 
 
@@ -41,25 +52,25 @@ def style_green(s: str) -> str:
     return f"[green]{s}[/green]"
 
 
-def style_list_item(s: str | List[str]) -> str:
+def style_list_item(s: Union[str, List[str]]) -> str:
     return " • " + style_indent(s).strip()
 
 
-def style_list(l: List[str | List[str]]) -> str:
+def style_list(l: List[Union[str, List[str]]]) -> str:
     return "\n".join(style_list_item(s) for s in l)
 
 
-def print_list(l: List[str | List[str]], console: rich.console.Console | None = None):
+def print_list(l: List[Union[str, List[str]]], console: Optional[rich.console.Console] = None):
     console = console or rich.get_console()
 
     console.print(style_list(l))
 
 
 def style_error(
-    message: BaseException | str,
+    message: Union[BaseException, str],
     *,
     error: Optional[BaseException] = None,
-    no_traceback: Optional[bool | Type[BaseException] | Tuple[Type[BaseException]]] = True,
+    no_traceback: Union[bool, Type[BaseException], Tuple[Type[BaseException], ...]] = True,
 ) -> str:
     error_str: str
     traceback_str: str = ""
@@ -69,7 +80,7 @@ def style_error(
             error_str = f"[{type(error).__name__}] {message}"
 
             if no_traceback is not True and (no_traceback is False or not isinstance(error, no_traceback)):
-                traceback_str = "\n" + "\n".join(traceback.format_exception(error))
+                traceback_str = "\n" + "\n".join(format_exception(error))
         else:
             error_str = message
     else:
@@ -77,14 +88,14 @@ def style_error(
         error_str = f"[{type(error).__name__}] {str(error)}"
 
         if no_traceback is not True and (no_traceback is False or not isinstance(error, no_traceback)):
-            traceback_str = "\n" + "\n".join(traceback.format_exception(error))
+            traceback_str = "\n" + "\n".join(format_exception(error))
 
     return style_red(style_bold(error_str)) + traceback_str
 
 
 def style_errors(
-    errors: Dict[str, BaseException | str],
-    no_traceback: Optional[bool | Type[BaseException] | Tuple[Type[BaseException]]] = True,
+    errors: Dict[str, Union[BaseException, str]],
+    no_traceback: Union[bool, Type[BaseException], Tuple[Type[BaseException], ...]] = True,
 ) -> str:
     return style_list(
         [
@@ -107,7 +118,8 @@ def style_report(job_report: JobReport):
         return style_list_item(
             "{0} : {1}".format(
                 style_bold(job_report.context),
-                style_green(style_bold(job_report.details))
+                style_green(style_bold(job_report.details if isinstance(
+                    job_report.details, str) else str(job_report.details)))
             )
         )
     else:
@@ -119,7 +131,7 @@ def style_report(job_report: JobReport):
         )
 
 
-def print_reports(operation: Iterator[JobReport], *, operation_name=".", console: rich.console.Console | None = None):
+def print_reports(operation: Iterator[JobReport], *, operation_name=".", console: Optional[rich.console.Console] = None):
 
     console = console or rich.get_console()
     status = console.status(operation_name, spinner="earth")
@@ -133,7 +145,7 @@ def print_reports(operation: Iterator[JobReport], *, operation_name=".", console
             console.print(style_report(job_report), crop=False, overflow="ignore")
 
 
-def style_stac(obj: Item | Collection | Catalog) -> str:
+def style_stac(obj: Union[Item, Collection, Catalog]) -> str:
     return "{id} v{version}".format(
         id=obj.id,
         version=_get_version(obj)
@@ -141,19 +153,19 @@ def style_stac(obj: Item | Collection | Catalog) -> str:
 
 
 def print_error(
-    message: Exception | str | Dict[str, Exception | str],
+    message: Union[BaseException, str, Dict[str, Union[BaseException, str]]],
     *,
-    console: rich.console.Console | None = None,
+    console: Optional[rich.console.Console] = None,
     error: Optional[BaseException] = None,
-    no_traceback: Optional[bool | Type[BaseException] | Tuple[Type[BaseException]]] = True,
+    no_traceback: Union[bool, Type[BaseException], Tuple[Type[BaseException], ...]] = True,
 ):
 
     err_console = console or rich.console.Console(stderr=True)
 
     if hasattr(message, "items"):
-        err_console.print(style_errors(message, no_traceback=no_traceback))
+        err_console.print(style_errors(cast(Dict[str, Union[BaseException, str]], message), no_traceback=no_traceback))
     else:
-        err_console.print(style_error(message, error=error, no_traceback=no_traceback))
+        err_console.print(style_error(cast(Union[BaseException, str], message), error=error, no_traceback=no_traceback))
 
 
 # def product_mutation_to_rich_str(product: pystac.STACObject, reprocessed_product: pystac.STACObject):

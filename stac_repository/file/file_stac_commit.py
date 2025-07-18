@@ -1,16 +1,11 @@
 from typing import (
     Any,
+    Union,
+    Optional,
     TYPE_CHECKING
 )
 
-from types import (
-    NotImplementedType
-)
-
 import os
-import io
-import glob
-import posixpath
 import datetime
 import shutil
 from urllib.parse import urlparse as _urlparse
@@ -66,10 +61,10 @@ class FileStacCommit(DefaultReadableStacIO, BaseStacCommit):
 
     @property
     def message(self):
-        return NotImplemented
+        return NotImplementedError
 
     @property
-    def parent(self) -> BaseStacCommit | None:
+    def parent(self) -> Optional[BaseStacCommit]:
         return None
 
     def rollback(self):
@@ -80,4 +75,4 @@ class FileStacCommit(DefaultReadableStacIO, BaseStacCommit):
             raise BackupValueError("Non-filesystem backups are not supported")
 
         # Replace with rsync
-        shutil.copytree(os.path.dirname(self._root_catalog_href), backup_url, dirs_exist_ok=True)
+        shutil.copytree(os.path.dirname(self._catalog_href), backup_url, dirs_exist_ok=True)

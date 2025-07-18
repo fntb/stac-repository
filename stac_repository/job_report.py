@@ -1,19 +1,20 @@
-from enum import StrEnum
+from enum import Enum
 
 from typing import (
     NamedTuple,
+    Union
 )
 
 
-class JobState(StrEnum):
-    SUCCESS = "SUCCESS"
-    FAILURE = "FAILURE"
-    INPROGRESS = "INPROGRESS"
+class JobState(Enum):
+    SUCCESS = 0
+    FAILURE = 1
+    INPROGRESS = -1
 
 
 class JobReport(NamedTuple):
     context: str
-    details: str | BaseException
+    details: Union[str, BaseException]
     state: JobState
 
 

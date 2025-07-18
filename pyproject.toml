@@ -19,6 +19,10 @@ classifiers = [
     "Intended Audience :: Information Technology",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.8",
     "Development Status :: 4 - Beta",
 ]
 
@@ -28,10 +32,9 @@ maintainers = [
     { name = "Yannick Guéhenneux", email = "yannick.guehenneux@uca.fr" },
 ]
 
-license = "etalab-2.0"
-license-files = ["LICENCE.txt"]
+license.file = "LICENCE.txt"
 
-requires-python = ">=3.12"
+requires-python = ">=3.8"
 
 dependencies = [
     "pydantic ~= 2.10.3",
@@ -39,6 +42,7 @@ dependencies = [
     "orjson ~= 3.10",
     "shapely ~= 2.0.0",
     "typer ~= 0.15.1",
+    "typing-extensions>=4.13.2",
 ]
 
 [dependency-groups]
@@ -68,6 +72,7 @@ packages = [
     "stac_repository_cli",
     "stac_processor_cli",
 ]
+license-files = []
 
 [tool.setuptools.dynamic]
 version = { attr = "stac_repository.__about__.__version__" }

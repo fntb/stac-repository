@@ -4,20 +4,15 @@ from typing import (
     Any,
     Iterator,
     Optional,
+    Union,
+    BinaryIO,
     TYPE_CHECKING
 )
 
-from types import (
-    NotImplementedType
-)
-
-import datetime as datetimelib
 import os
-import io
 import shutil
 from urllib.parse import urlparse as _urlparse
 import posixpath
-import hashlib
 from contextlib import contextmanager
 
 import orjson
@@ -81,7 +76,7 @@ class GitStacTransaction(BaseStacTransaction):
             raise JSONObjectError from error
 
     @contextmanager
-    def get_asset(self, href: str) -> Iterator[io.RawIOBase | io.BufferedIOBase]:
+    def get_asset(self, href: str) -> Iterator[BinaryIO]:
         concrete_href = self._make_concrete_href(href)
 
         try:
@@ -105,7 +100,7 @@ class GitStacTransaction(BaseStacTransaction):
 
         self._git_repository.add(concrete_href)
 
-    def set_asset(self, href: str, value: io.RawIOBase | io.BufferedIOBase):
+    def set_asset(self, href: str, value: BinaryIO):
         concrete_href = self._make_concrete_href(href)
 
         if posixpath.splitext(_urlparse(href).path)[1] != ".json":
@@ -140,5 +135,5 @@ class GitStacTransaction(BaseStacTransaction):
             modified_files_s = " ".join(self._git_repository.modified_files)
             raise Exception(f"Unexpected unstaged files : {modified_files_s}")
 
-        self._git_repository.commit(message)
+        self._git_repository.commit(message or "")
         self._git_repository.push()

@@ -4,18 +4,15 @@ from typing import (
     Optional,
     Any,
     Iterator,
+    BinaryIO,
     TYPE_CHECKING
 )
 
-from functools import cached_property
-import hashlib
 import datetime
 import posixpath
 from urllib.parse import urlparse as _urlparse
 import os
 import orjson
-import io
-import re
 from contextlib import contextmanager
 
 from .git import (
@@ -31,7 +28,10 @@ from ..base_stac_commit import (
 )
 
 if TYPE_CHECKING:
-    from .git_stac_repository import GitStacRepository
+    from .git_stac_repository import (
+        GitStacRepository,
+        RepositoryNotFoundError
+    )
 
 
 class GitStacCommit(BaseStacCommit):
@@ -44,24 +44,27 @@ class GitStacCommit(BaseStacCommit):
         self._base_href = repository._base_href
 
         if commit is None:
-            commit = repository._git_repository.head
+            if repository._git_repository.head is not None:
+                self._git_commit = repository._git_repository.head
+            else:
+                raise RepositoryNotFoundError("Repository doesn't have any commit")
+        else:
+            self._git_commit = commit
 
-        self._git_commit = commit
-
-    @cached_property
+    @property
     def id(self) -> str:
         return self._git_commit.id
 
-    @cached_property
+    @property
     def datetime(self) -> datetime.datetime:
         return self._git_commit.datetime
 
-    @cached_property
+    @property
     def message(self) -> str:
         return self._git_commit.message
 
-    @cached_property
-    def parent(self) -> GitStacCommit | None:
+    @property
+    def parent(self) -> Optional[GitStacCommit]:
         return GitStacCommit(
             self._repository,
             self._git_commit.parent
@@ -96,7 +99,7 @@ class GitStacCommit(BaseStacCommit):
             raise JSONObjectError from error
 
     @contextmanager
-    def get_asset(self, href: str) -> Iterator[io.RawIOBase]:
+    def get_asset(self, href: str) -> Iterator[BinaryIO]:
         href = self._assert_href_in_repository(href)
         os_href = os.path.abspath(href)
 
@@ -113,7 +116,7 @@ class GitStacCommit(BaseStacCommit):
             concrete_git_repository.reset(self.id)
 
     def backup(self, backup_url: str):
-        return NotImplemented
+        return NotImplementedError
 
         mode = _urlparse(backup_url, "file").scheme
 

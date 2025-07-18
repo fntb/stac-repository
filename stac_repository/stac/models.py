@@ -7,17 +7,18 @@ from typing import (
     Literal,
     Iterator,
     Callable,
+    Union,
     Any,
+    BinaryIO,
 )
 
+from contextlib import contextmanager, AbstractContextManager
 
-import io
+import sys
 
-from stac_pydantic import (
-    Item as _Item,
-    Collection as _Collection,
-    Catalog as _Catalog,
-)
+from stac_pydantic.item import Item as _Item
+from stac_pydantic.collection import Collection as _Collection
+from stac_pydantic.catalog import Catalog as _Catalog
 
 from stac_pydantic.collection import (
     Extent,
@@ -46,49 +47,47 @@ from pydantic import (
     AnyUrl
 )
 
+if sys.version_info >= (3, 10):
+    from typing import TypeGuard
+else:
+    from typing_extensions import TypeGuard
+
 
 class Link(_Link):
-    _target: Optional[Item | Collection | Catalog] = None
+    _target: Optional[Union[Item, Collection, Catalog]] = None
 
     @property
-    def target(self) -> Item | Collection | Catalog:
+    def target(self) -> Optional[Union[Item, Collection, Catalog]]:
         """The resolved STAC Object."""
-        if not self.is_resolved():
-            raise AttributeError(f"{self.rel.capitalize()} link '{self.href}' is not resolved")
+        # if self._target is None:
+        #     raise AttributeError(f"{self.rel.capitalize()} link '{self.href}' is not resolved")
 
         return self._target
 
-    def resolve(self, value: Item | Collection | Catalog):
-        "Resolves the Link target."
+    @target.setter
+    def target(self, value: Union[Item, Collection, Catalog, None]):
         self._target = value
-
-    def unresolve(self):
-        self._target = None
-
-    def is_resolved(self):
-        return self._target is not None
 
 
 class Asset(_Asset):
-    _target: Optional[Callable[[], Iterator[io.RawIOBase | io.BufferedIOBase]]] = None
+    _target: Optional[Callable[[], AbstractContextManager[BinaryIO]]] = None
 
     @property
-    def target(self) -> Iterator[io.RawIOBase | io.BufferedIOBase]:
+    @contextmanager
+    def target(self) -> Iterator[Optional[BinaryIO]]:
         """The resolved Asset file stream."""
-        if not self.is_resolved():
-            raise AttributeError(f"Asset '{self.href}' is not resolved")
+        # if self._target is None:
+        #     raise AttributeError(f"Asset '{self.href}' is not resolved")
 
-        return self._target()
+        if self._target is None:
+            yield None
+        else:
+            with self._target() as target:
+                yield target
 
-    def resolve(self, value: Callable[[], Iterator[io.RawIOBase | io.BufferedIOBase]]):
-        "Resolves the Asset target."
+    @target.setter
+    def target(self, value: Optional[Callable[[], AbstractContextManager[BinaryIO]]]):
         self._target = value
-
-    def unresolve(self):
-        self._target = None
-
-    def is_resolved(self):
-        return self._target is not None
 
 
 class StacObject(BaseModel):
@@ -96,8 +95,8 @@ class StacObject(BaseModel):
 
 
 class Item(_Item):
-    links: List[Link]
-    assets: Dict[str, Asset]
+    links: List[Link]  # type: ignore
+    assets: Dict[str, Asset]  # type: ignore
 
     self_href: str = Field(exclude=True)
 
@@ -118,8 +117,8 @@ class Item(_Item):
 
 
 class Collection(_Collection):
-    links: List[Link]
-    assets: Optional[Dict[str, Asset]] = None
+    links: List[Link]  # type: ignore
+    assets: Optional[Dict[str, Asset]] = None  # type: ignore
 
     self_href: str = Field(exclude=True)
 
@@ -140,7 +139,7 @@ class Collection(_Collection):
 
 
 class Catalog(_Catalog):
-    links: List[Link]
+    links: List[Link]  # type: ignore
 
     self_href: str = Field(exclude=True)
 

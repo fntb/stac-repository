@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import (
     Optional,
     Tuple,
-    NamedTuple,
+    Union,
     List,
-    Dict
+    Dict,
+    overload
 )
 
 from collections import deque
@@ -92,7 +93,7 @@ def load(
     resolve_descendants: bool = False,
     resolve_assets: bool = False,
     store: ReadableStacIO = DefaultStacIO()
-) -> Item | Collection | Catalog:
+) -> Union[Item, Collection, Catalog]:
     """Loads and validates a STAC Object.
 
     Computes Link and Asset absolute hrefs.
@@ -110,12 +111,12 @@ def load(
     try:
         json_object = store.get(href)
     except JSONObjectError as error:
-        raise StacObjectError(f"{href} is not a STAC Object") from error
+        raise StacObjectError(f"{href} is not a JSON Object : {str(error)}") from error
 
     try:
         typed_object = StacObject.model_validate(json_object)
     except ValidationError:
-        raise StacObjectError(f"{href} is not a STAC Object")
+        raise StacObjectError(f"{href} is not a STAC Object : missing 'type' property")
 
     try:
         if typed_object.type == "Feature":
@@ -125,9 +126,9 @@ def load(
         elif typed_object.type == "Catalog":
             stac_object = Catalog.model_validate(json_object, context=href)
         else:
-            raise StacObjectError(f"{href} doesn't have a valid STAC Object type : '{typed_object.type}'") from error
+            raise StacObjectError(f"{href} doesn't have a valid STAC Object type : '{typed_object.type}'")
     except ValidationError as error:
-        raise StacObjectError(f"{href} is not a valid STAC Object") from error
+        raise StacObjectError(f"{href} is not a valid STAC Object : {str(error)}") from error
 
     for link in stac_object.links:
         link.href = urljoin(href, link.href)
@@ -137,7 +138,7 @@ def load(
             asset.href = urljoin(href, asset.href)
 
             if resolve_assets and asset.href.startswith(store._base_href):
-                asset.resolve(lambda href=asset.href: store.get_asset(href))
+                asset.target = lambda href=asset.href: store.get_asset(href)
 
     if resolve_descendants:
         resolved_links: List[Link] = []
@@ -158,16 +159,16 @@ def load(
                 except (FileNotFoundError, StacObjectError) as error:
                     logger.exception(f"[{type(error).__name__}] Ignored object {link.href} : {str(error)}")
                 else:
-                    link.resolve(child)
+                    link.target = child
 
                     for child_link in child.links:
                         if child_link.rel == "parent":
-                            child_link.resolve(stac_object)
+                            child_link.target = stac_object
 
                     if isinstance(child, Item) and isinstance(stac_object, Collection):
                         for child_link in child.links:
                             if child_link.rel == "collection":
-                                child_link.resolve(stac_object)
+                                child_link.target = stac_object
 
                     resolved_links.append(link)
 
@@ -177,11 +178,11 @@ def load(
 
 
 def load_parent(
-    stac_object: Item | Collection | Catalog,
+    stac_object: Union[Item, Collection, Catalog],
     *,
     resolve_assets: bool = False,
     store: ReadableStacIO = DefaultStacIO(),
-) -> Item | Collection | Catalog | None:
+) -> Optional[Union[Item, Collection, Catalog]]:
     """Loads and validate the parent of a STAC Object, if it has one. Resolves links.
 
     If the parent does not exist (i.e. FileNotFoundError) or is not valid STAC Objects (i.e. StacObjectError)
@@ -191,16 +192,16 @@ def load_parent(
         FileNotInRepositoryError: Parent is not in the repository
     """
 
-    def resolve_child_link(parent: Item | Collection | Catalog):
+    def resolve_child_link(parent: Union[Item, Collection, Catalog]):
         for link in parent.links:
-            if link.is_resolved():
+            if link.target is not None:
                 continue
 
             if link.rel not in ["item", "child"]:
                 continue
 
             if link.href == stac_object.self_href:
-                link.resolve(stac_object)
+                link.target = stac_object
 
     parent_link: Link
 
@@ -211,7 +212,7 @@ def load_parent(
     else:
         return None
 
-    if parent_link.is_resolved():
+    if parent_link.target is not None:
         resolve_child_link(parent_link.target)
         return parent_link.target
 
@@ -227,14 +228,14 @@ def load_parent(
         )
         stac_object.links.remove(parent_link)
     else:
-        parent_link.resolve(parent)
+        parent_link.target = parent
         resolve_child_link(parent)
         return parent
 
 
 def set_parent(
-    stac_object: Item | Collection | Catalog,
-    parent: Collection | Catalog,
+    stac_object: Union[Item, Collection, Catalog],
+    parent: Union[Collection, Catalog],
 ):
     """Sets the parent link of a STAC Object and the parent child link. Resolves them."""
 
@@ -246,7 +247,7 @@ def set_parent(
         type=MimeTypes.json,
     )
 
-    parent_link.resolve(parent)
+    parent_link.target = parent
 
     child_link: Link
     if isinstance(stac_object, Item):
@@ -262,7 +263,7 @@ def set_parent(
             type=MimeTypes.json,
         )
 
-    child_link.resolve(stac_object)
+    child_link.target = stac_object
 
     stac_object.links.append(parent_link)
     parent.links.append(child_link)
@@ -273,14 +274,14 @@ def set_parent(
             rel="collection",
             type=MimeTypes.json
         )
-        collection_link.resolve(parent)
+        collection_link.target = parent
 
         stac_object.links.append(collection_link)
         stac_object.collection = parent.id
 
 
 def unset_parent(
-    stac_object: Item | Collection | Catalog,
+    stac_object: Union[Item, Collection, Catalog],
 ):
     """Removes the parent link of a STAC Object.
 
@@ -288,15 +289,15 @@ def unset_parent(
     """
 
     links: List[Link] = []
-    parent: Collection | Catalog | None = None
+    parent: Optional[Union[Item, Collection, Catalog]] = None
 
     for link in stac_object.links:
         if link.rel == "parent":
-            if link.is_resolved():
+            if link.target is not None:
                 parent = link.target
                 parent.links = [link for link in parent.links if link.href != stac_object.self_href]
         elif link.rel == "collection":
-            if link.is_resolved():
+            if link.target is not None:
                 parent = link.target
                 parent.links = [link for link in parent.links if link.href != stac_object.self_href]
         else:
@@ -309,15 +310,15 @@ def unset_parent(
 
 
 def search(
-    root_href: str | Item | Collection | Catalog,
+    root_href: Union[str, Item, Collection, Catalog],
     id: str,
     store: ReadableStacIO = DefaultStacIO()
-) -> Item | Collection | Catalog | None:
+) -> Optional[Union[Item, Collection, Catalog]]:
     """Walks the catalog - without loading it all into memory at once - to find a STAC Object with some id."""
 
     try:
         stac_object = load(
-            root_href,
+            root_href if isinstance(root_href, str) else root_href.self_href,
             store=store
         )
     except (FileNotFoundError, StacObjectError, FileNotInRepositoryError) as error:
@@ -347,7 +348,7 @@ def search(
 
 
 def save(
-    stac_object: Item | Collection | Catalog,
+    stac_object: Union[Item, Collection, Catalog],
     store: StacIO = DefaultStacIO(),
 ):
     """Normalizes and saves a STAC object and its resolved descendants and assets.
@@ -361,7 +362,7 @@ def save(
 
         link.href = urlrel(link.href, stac_object.self_href)
 
-        if not link.is_resolved():
+        if link.target is None:
             normalized_links.append(link)
             continue
 
@@ -402,13 +403,13 @@ def save(
     stac_object.links = normalized_links
 
     for link in stac_object.links:
-        if link.is_resolved():
+        if link.target is not None:
             if link.rel in ["child", "item"]:
                 save(link.target, store=store)
 
     if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
         for asset in stac_object.assets.values():
-            if asset.is_resolved():
+            if asset.target is not None:
                 asset.href = posixpath.join(".", posixpath.basename(urlpath(asset.href)))
             else:
                 asset.href = urlrel(asset.href, stac_object.self_href)
@@ -416,18 +417,18 @@ def save(
         saved_assets: Dict[str, Asset] = {}
 
         for (key, asset) in stac_object.assets.items():
-            if asset.is_resolved():
-                try:
-                    with asset.target as asset_stream:
+            with asset.target as asset_stream:
+                if asset_stream is not None:
+                    try:
                         store.set_asset(urljoin(stac_object.self_href, asset.href), asset_stream)
 
-                    asset.resolve(lambda href=urljoin(stac_object.self_href, asset.href): store.get_asset(href))
-                except FileNotFoundError as error:
-                    logger.exception(
-                        f"[{type(error).__name__}] Ignored asset {urljoin(stac_object.self_href, asset.href)} : {str(error)}"
-                    )
-                else:
-                    saved_assets[key] = asset
+                        asset.target = lambda href=urljoin(stac_object.self_href, asset.href): store.get_asset(href)
+                    except FileNotFoundError as error:
+                        logger.exception(
+                            f"[{type(error).__name__}] Ignored asset {urljoin(stac_object.self_href, asset.href)} : {str(error)}"
+                        )
+                    else:
+                        saved_assets[key] = asset
 
         stac_object.assets = saved_assets
 
@@ -511,44 +512,56 @@ def export(
 
 
 def delete(
-    href_or_stac_object: str | Item | Collection | Catalog,
+    href_or_stac_object: Union[str, Item, Collection, Catalog],
     store: StacIO = DefaultStacIO(),
 ):
     """Deletes a STAC object and all its descendants and assets.
     """
+    if isinstance(href_or_stac_object, str):
+        href = href_or_stac_object
 
-    try:
-        if isinstance(href_or_stac_object, str):
-            href = href_or_stac_object
+        try:
             stac_object = load(
                 href,
                 store=store,
             )
-        else:
-            href = href_or_stac_object.self_href
-            stac_object = href_or_stac_object
-    except FileNotInRepositoryError:
-        pass
-    except (FileNotFoundError, StacObjectError) as error:
-        logger.exception(
-            f"[{type(error).__name__}] Couldn't load object {href} - removing it will potentially create unreachable orphans : {str(error)}"
-        )
-        store.unset(href)
+        except FileNotInRepositoryError:
+            stac_object = None
+        except (FileNotFoundError, StacObjectError) as error:
+            logger.exception(
+                f"[{type(error).__name__}] Couldn't load object {href} - removing it will potentially create unreachable orphans : {str(error)}"
+            )
+            stac_object = None
     else:
-        if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
-            for asset in stac_object.assets.values():
-                store.unset(asset.href)
+        href = href_or_stac_object.self_href
+        stac_object = href_or_stac_object
 
-        if isinstance(stac_object, (Collection, Catalog)):
-            for link in stac_object.links:
-                if link.rel in ["child", "item"]:
-                    delete(link.href, store=store)
+    if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
+        for asset in stac_object.assets.values():
+            store.unset(asset.href)
 
-        store.unset(href)
+    if isinstance(stac_object, (Collection, Catalog)):
+        for link in stac_object.links:
+            if link.rel in ["child", "item"]:
+                delete(link.href, store=store)
+
+    store.unset(href)
 
 
-def fromisoformat(datetime_s: str | datetime.datetime) -> datetime.datetime:
-    if isinstance(datetime_s, str):
+@overload
+def fromisoformat(datetime_s: Union[str, datetime.datetime]) -> datetime.datetime:
+    ...
+
+
+@overload
+def fromisoformat(datetime_s: None) -> None:
+    ...
+
+
+def fromisoformat(datetime_s: Optional[Union[str, datetime.datetime]]) -> Optional[datetime.datetime]:
+    if datetime_s is None:
+        return None
+    elif isinstance(datetime_s, str):
         if not datetime_s.endswith("Z"):
             return datetime.datetime.fromisoformat(datetime_s)
         else:
@@ -559,8 +572,20 @@ def fromisoformat(datetime_s: str | datetime.datetime) -> datetime.datetime:
         raise TypeError(f"{str(datetime_s)} is not a datetime string")
 
 
-def toisoformat(datetime_t: str | datetime.datetime) -> str:
-    if isinstance(datetime_t, str):
+@overload
+def toisoformat(datetime_t: Union[str, datetime.datetime]) -> str:
+    ...
+
+
+@overload
+def toisoformat(datetime_t: None) -> None:
+    ...
+
+
+def toisoformat(datetime_t: Optional[Union[str, datetime.datetime]]) -> Optional[str]:
+    if datetime_t is None:
+        return None
+    elif isinstance(datetime_t, str):
         return datetime_t
     elif isinstance(datetime_t, datetime.datetime):
         return datetime_t.isoformat()
@@ -568,10 +593,26 @@ def toisoformat(datetime_t: str | datetime.datetime) -> str:
         raise TypeError(f"{str(datetime_t)} is not a datetime")
 
 
+@overload
 def get_extent(
-    stac_object: Item | Collection | Catalog,
+    stac_object: Union[Item, Collection],
     store: StacIO = DefaultStacIO(),
-) -> Extent | None:
+) -> Extent:
+    ...
+
+
+@overload
+def get_extent(
+    stac_object: Catalog,
+    store: StacIO = DefaultStacIO(),
+) -> Optional[Extent]:
+    ...
+
+
+def get_extent(
+    stac_object: Union[Item, Collection, Catalog],
+    store: StacIO = DefaultStacIO(),
+) -> Optional[Extent]:
     """Retreives (or compute, if necessary) a STAC object extent. Returns None without raising on (and only on) empty catalogs.
 
     Raises:
@@ -583,6 +624,9 @@ def get_extent(
         datetimes: Tuple[datetime.datetime, datetime.datetime]
 
         if stac_object.bbox is not None:
+            if len(stac_object.bbox) != 4:
+                raise NotImplementedError(f"3-dimensional bbox encountered on item {stac_object.id}")
+
             bbox = stac_object.bbox
         elif stac_object.geometry is not None:
             bbox = tuple(*shapely.bounds(shapely.geometry.shape(stac_object.geometry)))
@@ -604,10 +648,10 @@ def get_extent(
 
         return Extent(
             spatial=SpatialExtent(
-                bbox=[bbox]
+                bbox=[list(bbox)]
             ),
             temporal=TemporalExtent(
-                interval=[(toisoformat(datetimes[0]), toisoformat(datetimes[1]))]
+                interval=[[toisoformat(datetimes[0]), toisoformat(datetimes[1])]]
             )
         )
     elif isinstance(stac_object, Collection):
@@ -619,10 +663,26 @@ def get_extent(
         )
 
 
+@overload
 def compute_extent(
-    stac_object: Item | Collection | Catalog,
+    stac_object: Union[Item, Collection],
     store: StacIO = DefaultStacIO(),
-) -> Extent | None:
+) -> Extent:
+    ...
+
+
+@overload
+def compute_extent(
+    stac_object: Catalog,
+    store: StacIO = DefaultStacIO(),
+) -> Optional[Extent]:
+    ...
+
+
+def compute_extent(
+    stac_object: Union[Item, Collection, Catalog],
+    store: StacIO = DefaultStacIO(),
+) -> Optional[Extent]:
     """Computes a STAC object extent. Returns None without raising on (and only on) empty catalogs.
 
     Raises:
@@ -634,13 +694,13 @@ def compute_extent(
 
     is_empty = True
 
-    bbox = [
+    bbox: List[float] = [
         180.,
         90.,
         -180.,
         -90.
     ]
-    datetimes = [
+    datetimes: List[Optional[datetime.datetime]] = [
         None,
         None
     ]
@@ -652,7 +712,7 @@ def compute_extent(
         if link.rel not in ("item", "child"):
             continue
 
-        if not link.is_resolved():
+        if link.target is None:
             try:
                 child = load(
                     link.href,
@@ -673,6 +733,7 @@ def compute_extent(
         is_empty = False
 
         child_bbox = child_extent.spatial.bbox[0]
+
         child_datetimes = (
             fromisoformat(child_extent.temporal.interval[0][0]),
             fromisoformat(child_extent.temporal.interval[0][1])
@@ -686,8 +747,15 @@ def compute_extent(
         bbox[2] = max(bbox[2], child_bbox[2])
         bbox[3] = max(bbox[3], child_bbox[3])
 
-        datetimes[0] = min(datetimes[0], child_datetimes[0]) if datetimes[0] is not None else child_datetimes[0]
-        datetimes[1] = max(datetimes[1], child_datetimes[1]) if datetimes[1] is not None else child_datetimes[1]
+        if datetimes[0] is None or child_datetimes[0] is None:
+            datetimes[0] = None
+        else:
+            datetimes[0] = min(datetimes[0], child_datetimes[0])
+
+        if datetimes[1] is None or child_datetimes[1] is None:
+            datetimes[1] = None
+        else:
+            datetimes[1] = max(datetimes[1], child_datetimes[1])
 
     if is_empty:
         if isinstance(stac_object, Catalog):
@@ -704,26 +772,31 @@ def compute_extent(
         ),
         temporal=TemporalExtent(
             interval=[
-                (toisoformat(datetimes[0]), toisoformat(datetimes[1])) for datetimes in datetimess
+                [toisoformat(datetimes[0]), toisoformat(datetimes[1])] for datetimes in datetimess
             ]
         )
     )
 
 
 def get_version(
-    stac_object: Item | Collection | Catalog,
+    stac_object: Union[Item, Collection, Catalog],
 ) -> str:
     """Retrieves the version of a STAC object
 
     Raises:
         VersionNotFoundError: No version attribute found
+        StacObjectError: Version is not a string
     """
-    if isinstance(stac_object, Item):
+    if isinstance(stac_object, Item) and stac_object.properties.model_extra is not None:
         version = stac_object.properties.model_extra.get("version")
-    else:
+    elif isinstance(stac_object, (Collection, Catalog)) and stac_object.model_extra is not None:
         version = stac_object.model_extra.get("version")
+    else:
+        version = None
 
-    if not version:
+    if version is None:
         raise VersionNotFoundError("Version not found")
+    elif not isinstance(version, str):
+        raise StacObjectError(f"Stac Object {stac_object.id} \"version\" property is not a string")
 
     return version
