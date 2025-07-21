@@ -47,7 +47,6 @@ from .models import (
 from .stac_io import (
     ReadableStacIO,
     StacIO,
-    DefaultStacIO,
     JSONObjectError,
     FileNotInRepositoryError
 )
@@ -87,12 +86,42 @@ def urlpath(href: str) -> str:
     return _urlparse(href).path
 
 
+class StacIOScope(Flag):
+    REPOSITORY_STAC = 1
+    """All STAC Objects under `base_href`"""
+
+    REPOSITORY_ASSET = 2
+    """All assets under `base_href`"""
+
+    STAC = 1 | 4
+    """All STAC Objects"""
+
+    ASSET = 2 | 8
+    """All assets"""
+
+
+class StacIOScopeGuard():
+
+    _base_href: str
+    _scope: StacIOScope
+
+    def __init__(self, base_href: str, scope: StacIOScope):
+        self._base_href = base_href
+        self._scope = scope
+
+    def is_stac_object_in_scope(href: str) -> bool:
+        pass
+
+    def is_stac_asset_in_scope(href: str) -> bool:
+        pass
+
+
 def load(
     href: str,
     *,
     resolve_descendants: bool = False,
     resolve_assets: bool = False,
-    store: ReadableStacIO = DefaultStacIO()
+    io: ReadableStacIO
 ) -> Union[Item, Collection, Catalog]:
     """Loads and validates a STAC Object.
 
@@ -109,7 +138,7 @@ def load(
         StacObjectError: The retrieved (root) JSON Object is not a valid representation of a STAC Object
     """
     try:
-        json_object = store.get(href)
+        json_object = io.get(href)
     except JSONObjectError as error:
         raise StacObjectError(f"{href} is not a JSON Object : {str(error)}") from error
 
@@ -137,14 +166,14 @@ def load(
         for asset in stac_object.assets.values():
             asset.href = urljoin(href, asset.href)
 
-            if resolve_assets and asset.href.startswith(store._base_href):
-                asset.target = lambda href=asset.href: store.get_asset(href)
+            if resolve_assets and asset.href.startswith(io._base_href):
+                asset.target = lambda href=asset.href: io.get_asset(href)
 
     if resolve_descendants:
         resolved_links: List[Link] = []
 
         for link in stac_object.links:
-            if not link.href.startswith(store._base_href):
+            if not link.href.startswith(io._base_href):
                 resolved_links.append(link)
             elif link.rel not in ["child", "item"]:
                 resolved_links.append(link)
@@ -154,7 +183,7 @@ def load(
                         link.href,
                         resolve_descendants=resolve_descendants,
                         resolve_assets=resolve_assets,
-                        store=store
+                        io=io
                     )
                 except (FileNotFoundError, StacObjectError) as error:
                     logger.exception(f"[{type(error).__name__}] Ignored object {link.href} : {str(error)}")
@@ -181,7 +210,7 @@ def load_parent(
     stac_object: Union[Item, Collection, Catalog],
     *,
     resolve_assets: bool = False,
-    store: ReadableStacIO = DefaultStacIO(),
+    io: ReadableStacIO,
 ) -> Optional[Union[Item, Collection, Catalog]]:
     """Loads and validate the parent of a STAC Object, if it has one. Resolves links.
 
@@ -220,7 +249,7 @@ def load_parent(
         parent = load(
             parent_link.href,
             resolve_assets=resolve_assets,
-            store=store,
+            io=io,
         )
     except (FileNotFoundError, StacObjectError) as error:
         logger.exception(
@@ -312,14 +341,15 @@ def unset_parent(
 def search(
     root_href: Union[str, Item, Collection, Catalog],
     id: str,
-    store: ReadableStacIO = DefaultStacIO()
+    *,
+    io: ReadableStacIO
 ) -> Optional[Union[Item, Collection, Catalog]]:
     """Walks the catalog - without loading it all into memory at once - to find a STAC Object with some id."""
 
     try:
         stac_object = load(
             root_href if isinstance(root_href, str) else root_href.self_href,
-            store=store
+            io=io
         )
     except (FileNotFoundError, StacObjectError, FileNotInRepositoryError) as error:
         logger.exception(f"[{type(error).__name__}] Ignored object {root_href} : {str(error)}")
@@ -332,13 +362,13 @@ def search(
             if link.rel not in ("item", "child"):
                 continue
 
-            if not link.href.startswith(store._base_href):
+            if not link.href.startswith(io._base_href):
                 continue
 
             found_object = search(
                 link.href,
                 id,
-                store=store
+                io=io
             )
 
             if found_object is not None:
@@ -349,7 +379,8 @@ def search(
 
 def save(
     stac_object: Union[Item, Collection, Catalog],
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ):
     """Normalizes and saves a STAC object and its resolved descendants and assets.
     """
@@ -405,7 +436,7 @@ def save(
     for link in stac_object.links:
         if link.target is not None:
             if link.rel in ["child", "item"]:
-                save(link.target, store=store)
+                save(link.target, io=io)
 
     if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
         for asset in stac_object.assets.values():
@@ -420,9 +451,9 @@ def save(
             with asset.target as asset_stream:
                 if asset_stream is not None:
                     try:
-                        store.set_asset(urljoin(stac_object.self_href, asset.href), asset_stream)
+                        io.set_asset(urljoin(stac_object.self_href, asset.href), asset_stream)
 
-                        asset.target = lambda href=urljoin(stac_object.self_href, asset.href): store.get_asset(href)
+                        asset.target = lambda href=urljoin(stac_object.self_href, asset.href): io.get_asset(href)
                     except FileNotFoundError as error:
                         logger.exception(
                             f"[{type(error).__name__}] Ignored asset {urljoin(stac_object.self_href, asset.href)} : {str(error)}"
@@ -432,13 +463,14 @@ def save(
 
         stac_object.assets = saved_assets
 
-    store.set(stac_object.self_href, stac_object.model_dump())
+    io.set(stac_object.self_href, stac_object.model_dump())
 
 
 def export(
     href: str,
     file: str,
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ):
     """Exports a STAC Object and all its descendants and assets.
 
@@ -454,14 +486,14 @@ def export(
         raise FileExistsError(f"{dir} is not empty")
 
     try:
-        stac_object = load(href, resolve_assets=True, store=store)
+        stac_object = load(href, resolve_assets=True, io=io)
 
         unset_parent(stac_object)
 
         saved_links: List[Link] = []
 
         for link in stac_object.links:
-            if not link.href.startswith(store._base_href) or link.rel not in ["child", "item"]:
+            if not link.href.startswith(io._base_href) or link.rel not in ["child", "item"]:
                 saved_links.append(link)
                 continue
 
@@ -469,7 +501,7 @@ def export(
                 export(
                     link.href,
                     os.path.join(dir, urlrel(link.href, href)),
-                    store=store
+                    io=io
                 )
             except (FileNotFoundError, StacObjectError) as error:
                 logger.exception(f"[{type(error).__name__}] Ignored object {link.href} : {str(error)}")
@@ -482,14 +514,14 @@ def export(
 
         if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
             for (key, asset) in stac_object.assets.items():
-                if not asset.href.startswith(store._base_href):
+                if not asset.href.startswith(io._base_href):
                     saved_assets[key] = asset
                     continue
 
                 asset_file = os.path.join(dir, posixpath.basename(urlpath(asset.href)))
 
                 try:
-                    with store.get_asset(asset.href) as asset_read_stream:
+                    with io.get_asset(asset.href) as asset_read_stream:
                         with open(asset_file, "w+b") as asset_write_stream:
                             while (chunk := asset_read_stream.read()):
                                 asset_write_stream.write(chunk)
@@ -513,7 +545,8 @@ def export(
 
 def delete(
     href_or_stac_object: Union[str, Item, Collection, Catalog],
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ):
     """Deletes a STAC object and all its descendants and assets.
     """
@@ -523,7 +556,7 @@ def delete(
         try:
             stac_object = load(
                 href,
-                store=store,
+                io=io,
             )
         except FileNotInRepositoryError:
             stac_object = None
@@ -538,14 +571,14 @@ def delete(
 
     if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
         for asset in stac_object.assets.values():
-            store.unset(asset.href)
+            io.unset(asset.href)
 
     if isinstance(stac_object, (Collection, Catalog)):
         for link in stac_object.links:
             if link.rel in ["child", "item"]:
-                delete(link.href, store=store)
+                delete(link.href, io=io)
 
-    store.unset(href)
+    io.unset(href)
 
 
 @overload
@@ -596,7 +629,8 @@ def toisoformat(datetime_t: Optional[Union[str, datetime.datetime]]) -> Optional
 @overload
 def get_extent(
     stac_object: Union[Item, Collection],
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ) -> Extent:
     ...
 
@@ -604,14 +638,16 @@ def get_extent(
 @overload
 def get_extent(
     stac_object: Catalog,
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ) -> Optional[Extent]:
     ...
 
 
 def get_extent(
     stac_object: Union[Item, Collection, Catalog],
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ) -> Optional[Extent]:
     """Retreives (or compute, if necessary) a STAC object extent. Returns None without raising on (and only on) empty catalogs.
 
@@ -659,14 +695,15 @@ def get_extent(
     else:
         return compute_extent(
             stac_object,
-            store=store
+            io=io
         )
 
 
 @overload
 def compute_extent(
     stac_object: Union[Item, Collection],
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ) -> Extent:
     ...
 
@@ -674,14 +711,16 @@ def compute_extent(
 @overload
 def compute_extent(
     stac_object: Catalog,
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ) -> Optional[Extent]:
     ...
 
 
 def compute_extent(
     stac_object: Union[Item, Collection, Catalog],
-    store: StacIO = DefaultStacIO(),
+    *,
+    io: StacIO,
 ) -> Optional[Extent]:
     """Computes a STAC object extent. Returns None without raising on (and only on) empty catalogs.
 
@@ -690,7 +729,7 @@ def compute_extent(
     """
 
     if isinstance(stac_object, Item):
-        return get_extent(stac_object, store=store)
+        return get_extent(stac_object, io=io)
 
     is_empty = True
 
@@ -716,7 +755,7 @@ def compute_extent(
             try:
                 child = load(
                     link.href,
-                    store=store,
+                    io=io,
                 )
             except (FileNotFoundError, StacObjectError, FileNotInRepositoryError) as error:
                 logger.exception(
@@ -725,7 +764,7 @@ def compute_extent(
         else:
             child = link.target
 
-        child_extent = get_extent(child, store=store)
+        child_extent = get_extent(child, io=io)
 
         if child_extent is None:
             continue

@@ -19,6 +19,8 @@ import posixpath
 from .stac import (
     StacIO,
     DefaultStacIO,
+    DefaultReadableStacIO,
+    DefaultReadableStacIOScope,
     Item,
     Collection,
     Catalog,
@@ -36,7 +38,9 @@ from .stac import (
 )
 
 if TYPE_CHECKING:
-    from .base_stac_repository import BaseStacRepository
+    from .base_stac_repository import (
+        BaseStacRepository,
+    )
 
 
 logger = logging.getLogger(__file__)
@@ -99,6 +103,9 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         self,
         product_file: str,
         parent_id: Optional[str] = None,
+        catalog_assets: bool = False,
+        catalog_assets_out_of_scope: bool = False,
+        catalog_out_of_scope: bool = False
     ):
         """Catalogs a product.
 
@@ -110,7 +117,18 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
             RootCatalogError: Product has the same id as the root and would thus replace it
         """
 
-        product_store = DefaultStacIO(base_href=os.path.dirname(product_file))
+        product_scope = DefaultReadableStacIOScope.BASE_STAC
+        if catalog_assets:
+            product_scope |= DefaultReadableStacIOScope.BASE_ASSET
+        if catalog_out_of_scope:
+            product_scope |= DefaultReadableStacIOScope.STAC
+        if catalog_assets_out_of_scope:
+            product_scope |= DefaultReadableStacIOScope.ASSET
+
+        product_store = DefaultReadableStacIO(
+            base_href=os.path.dirname(product_file),
+            scope=product_scope
+        )
 
         try:
             product = load(

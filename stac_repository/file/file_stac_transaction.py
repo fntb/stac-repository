@@ -110,7 +110,13 @@ class FileStacTransaction(DefaultStacIO, BaseStacTransaction):
         return super().set(f"{href}.tmp", value)
 
     def unset(self, href: str):
-        href = self._assert_href_in_repository(href)
+        href = self._abs_href(href)
+
+        self._assert_asset_within_base(href)
+
+        if not self._is_file_href(href):
+            raise FileNotInRepositoryError(f"Cannot write {href} - this is not a local file uri")
+
         os_href = os.path.abspath(href)
 
         try:

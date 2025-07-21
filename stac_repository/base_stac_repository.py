@@ -244,11 +244,13 @@ class BaseStacRepository(metaclass=ABCMeta):
 
     def _ingest_product(
         self,
+        transaction: BaseStacTransaction,
         processor: Processor,
         product_source: str,
         parent_id: Optional[str] = None,
-        *,
-        transaction: BaseStacTransaction,
+        ingest_assets: bool = False,
+        ingest_assets_out_of_scope: bool = False,
+        ingest_out_of_scope: bool = False,
     ) -> Iterator[JobReport]:
         """Ingests a product.
 
@@ -294,7 +296,10 @@ class BaseStacRepository(metaclass=ABCMeta):
 
             transaction.catalog(
                 processed_stac_object_file,
-                parent_id=parent_id
+                parent_id=parent_id,
+                catalog_assets=ingest_assets,
+                catalog_assets_out_of_scope=ingest_assets_out_of_scope,
+                catalog_out_of_scope=ingest_out_of_scope
             )
 
             yield reporter.complete("Cataloged")
@@ -309,6 +314,9 @@ class BaseStacRepository(metaclass=ABCMeta):
         *sources: str,
         processor_id: str = "stac",
         parent_id: Optional[str] = None,
+        ingest_assets: bool = False,
+        ingest_assets_out_of_scope: bool = False,
+        ingest_out_of_scope: bool = False,
     ) -> Iterator[JobReport]:
         """Discover and ingest products from some source(s).
 
@@ -360,6 +368,9 @@ class BaseStacRepository(metaclass=ABCMeta):
                         product_source=product_source,
                         parent_id=parent_id,
                         transaction=transaction,
+                        ingest_assets=ingest_assets,
+                        ingest_assets_out_of_scope=ingest_assets_out_of_scope,
+                        ingest_out_of_scope=ingest_out_of_scope,
                     )
                 except Exception as error:
                     errors[f"product={product_source}"] = error

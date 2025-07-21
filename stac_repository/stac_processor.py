@@ -7,10 +7,13 @@ import os
 import mimetypes
 import uuid
 import logging
+from urllib.parse import urlparse
 
 
 from .stac import (
     load,
+    DefaultReadableStacIO,
+    DefaultReadableStacIOScope,
     get_version,
     VersionNotFoundError,
     StacObjectError
@@ -27,47 +30,60 @@ class StacProcessor(Processor):
 
     @staticmethod
     def discover(source: str) -> Iterator[str]:
-        source = os.path.abspath(source)
+        def is_file(file: str) -> bool:
+            return urlparse(file, scheme="").scheme == ""
 
         def is_stac_file(file: str):
             if mimetypes.guess_type(file)[0] != "application/json":
                 return False
 
             try:
-                load(file)
+                load(file, store=DefaultReadableStacIO(base_href=file))
             except StacObjectError as error:
                 logger.info(f"Skipped {file} : {str(error)}")
                 return False
 
             return True
 
-        if not os.path.lexists(source):
-            return
+        if is_file(source):
+            source = os.path.abspath(source)
 
-        if os.path.isdir(source):
-            for file_name in os.listdir(source):
-                file = os.path.join(source, file_name)
-                if is_stac_file(file):
-                    yield file
+            if not os.path.lexists(source):
+                return
+
+            if os.path.isdir(source):
+                for file_name in os.listdir(source):
+                    file = os.path.join(source, file_name)
+                    if is_stac_file(file):
+                        yield file
+            else:
+                if is_stac_file(source):
+                    yield source
         else:
             if is_stac_file(source):
                 yield source
 
     @staticmethod
     def id(product_source: str) -> str:
-        product_source = os.path.abspath(product_source)
-        return load(product_source).id
+        if urlparse(product_source, scheme="").scheme == "":
+            product_source = os.path.abspath(product_source)
+
+        return load(product_source, store=DefaultReadableStacIO(base_href=product_source)).id
 
     @staticmethod
     def version(product_source: str) -> str:
-        product_source = os.path.abspath(product_source)
+        if urlparse(product_source, scheme="").scheme == "":
+            product_source = os.path.abspath(product_source)
+
         try:
-            return get_version(load(product_source))
+            return get_version(load(product_source, store=DefaultReadableStacIO(base_href=product_source)))
         except VersionNotFoundError as error:
             logger.info(f"No version found {product_source}, generating random")
             return uuid.uuid4().hex
 
     @staticmethod
     def process(product_source: str) -> str:
-        product_source = os.path.abspath(product_source)
-        return os.path.abspath(product_source)
+        if urlparse(product_source, scheme="").scheme == "":
+            product_source = os.path.abspath(product_source)
+
+        return product_source

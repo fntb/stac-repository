@@ -302,6 +302,24 @@ def ingest(
             help="Processor (if any) to use to discover and ingest products"
         )
     ] = "stac",
+    ingest_assets: Annotated[
+        bool,
+        typer.Option(
+            help="Whever to ingest assets or not."
+        )
+    ] = True,
+    ingest_assets_out_of_scope: Annotated[
+        bool,
+        typer.Option(
+            help="[Danger] Whever to ingest assets out of scope or not. If true then `--ingest-assets` becomes true too."
+        )
+    ] = False,
+    ingest_out_of_scope: Annotated[
+        bool,
+        typer.Option(
+            help="[Danger] Whever to ingest child products out of scope or not."
+        )
+    ] = True,
     debug: bool = False
 ):
     """Ingests some products from various sources (eventually using an installed processor).
@@ -317,6 +335,9 @@ def ingest(
                 *sources,
                 processor_id=processor,
                 parent_id=parent,
+                ingest_assets=ingest_assets,
+                ingest_assets_out_of_scope=ingest_assets_out_of_scope,
+                ingest_out_of_scope=ingest_out_of_scope
             ),
             operation_name="Ingestion [{0}] {1}".format(
                 processor,

@@ -14,6 +14,8 @@ from .stac_io import (
     ReadableStacIO,
     StacIO,
     DefaultStacIO,
+    DefaultReadableStacIO,
+    DefaultReadableStacIOScope,
     JSONObjectError,
     FileNotInRepositoryError
 )
