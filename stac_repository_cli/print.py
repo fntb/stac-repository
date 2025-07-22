@@ -244,7 +244,7 @@ def print_error(
 
 def style_commit(commit: BaseStacCommit, include_message: bool = False):
 
-    if include_message and commit.message is not NotImplemented:
+    if include_message and commit.message != NotImplementedError:
         return "[bold]{id}[/bold] on {datetime}\n{message}".format(
             id=commit.id,
             datetime=f"{commit.datetime:%c}",

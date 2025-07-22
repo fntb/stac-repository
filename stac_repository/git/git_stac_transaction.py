@@ -24,8 +24,8 @@ from .git import (
 )
 
 from ..base_stac_commit import (
-    FileNotInRepositoryError,
-    JSONObjectError
+    JSONObjectError,
+    HrefError
 )
 from ..base_stac_transaction import (
     BaseStacTransaction
@@ -48,12 +48,12 @@ class GitStacTransaction(BaseStacTransaction):
 
     def _make_concrete_href(self, href: str):
         if _urlparse(href, scheme="").scheme != "":
-            raise FileNotInRepositoryError(f"{href} is not in repository {self._base_href}")
+            raise HrefError(f"{href} is not in repository {self._base_href}")
 
         href = posixpath.normpath(posixpath.join(self._base_href, href))
 
         if not href.startswith(self._base_href):
-            raise FileNotInRepositoryError(f"{href} is not in repository {self._base_href}")
+            raise HrefError(f"{href} is not in repository {self._base_href}")
 
         relhref = posixpath.relpath(href, self._base_href)
 

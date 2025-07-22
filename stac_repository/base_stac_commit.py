@@ -4,24 +4,22 @@ from typing import (
     TYPE_CHECKING,
     Union,
     Type,
-    Literal
 )
 
 
-import os
 import datetime
 import posixpath
 from abc import abstractmethod, ABCMeta
 
 from .stac import (
-    export,
     Item,
     Collection,
     Catalog,
     ReadableStacIO,
+    search,
+    StacObjectError,
     JSONObjectError,
-    FileNotInRepositoryError,
-    search
+    HrefError
 )
 
 if TYPE_CHECKING:
@@ -29,10 +27,20 @@ if TYPE_CHECKING:
 
 
 class BackupValueError(ValueError):
-    ...
+    """Backend cannot process this type of backup destination."""
+    pass
 
 
 class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
+
+    _base_href: str
+    """The base href of this repository.
+    
+    This value is used as the repository scope, stac objects and assets href falling outside of this scope will not be writeable
+    and will need to be read from an external source.
+    
+    **This value must be a base uri or absolute posix path.**
+    """
 
     @abstractmethod
     def __init__(self, repository: "BaseStacRepository"):
@@ -82,24 +90,19 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
 
     def export(self, export_dir: str):
         """Exports the catalog as it was in this commit.
-
-        Raises:
-            FileExistsError
         """
-
-        export(
-            self._catalog_href,
-            file=os.path.join(os.path.abspath(export_dir), "catalog.json"),
-        )
+        raise NotImplementedError
 
     def search(
         self,
-        id: str
+        id: str,
     ) -> Optional[Union[Item, Collection, Catalog]]:
-        """Searches the object with `id` in the commit catalog.
+        """Searches the cataloged object `id`.
+
+        This method will **not** lookup objects outside of the repository.
         """
         return search(
             self._catalog_href,
             id=id,
-            store=self
+            io=self,
         )

@@ -4,22 +4,19 @@ from typing import (
     Protocol,
     Any,
     Optional,
+    Dict,
     Iterator,
     BinaryIO,
+    cast
 )
+
+from enum import Flag
 
 from contextlib import contextmanager
 
-from enum import (
-    Flag,
-    auto
-)
-
 import os
-import posixpath
 from urllib.parse import (
     urlparse as _urlparse,
-    urljoin as _urljoin
 )
 
 import orjson
@@ -27,29 +24,32 @@ import requests
 
 
 class JSONObjectError(ValueError):
+    """Object is not a valid JSON object."""
     pass
 
 
-class FileNotInRepositoryError(ValueError):
+# class FileNotInRepositoryError(ValueError):
+#     pass
+
+
+class HrefError(ValueError):
+    """Href cannot be processed by the current StacIO implementation."""
     pass
 
 
 class ReadableStacIO(Protocol):
 
-    _base_href: str
-    """The base href under which hrefs can be retrieved under this implementation."""
-
     def get(self, href: str) -> Any:
-        """Reads a JSON Object.
+        """Reads a JSON object.
 
         This method is intended to retrieve STAC Objects, as such the returned 
-        value should be a valid representation of a STAC Object, this validation 
+        value should be a valid representation of a STAC object, this validation 
         is not handled by the ReadableStacIO but downstream however.
 
         Raises:
-            FileNotFoundError
-            FileNotInRepositoryError
-            JSONObjectError
+            HrefError:
+            FileNotFoundError:
+            JSONObjectError:
         """
         ...
 
@@ -67,8 +67,8 @@ class ReadableStacIO(Protocol):
         ```
 
         Raises:
-            FileNotFoundError
-            FileNotInRepositoryError
+            HrefError:
+            FileNotFoundError:
         """
         ...
 
@@ -76,11 +76,11 @@ class ReadableStacIO(Protocol):
 class StacIO(ReadableStacIO):
 
     def set(self, href: str, value: Any):
-        """(Over)writes a JSON Object, which is a valid representation of a STAC Object.
+        """(Over)writes a JSON object, which is a valid representation of a STAC object.
 
         Raises:
-            JSONObjectError
-            FileNotInRepositoryError
+            HrefError:
+            JSONObjectError:
         """
         ...
 
@@ -90,7 +90,7 @@ class StacIO(ReadableStacIO):
         This method is intended to save Asset files.
 
         Raises:
-            FileNotInRepositoryError
+            HrefError:
         """
         ...
 
@@ -98,96 +98,51 @@ class StacIO(ReadableStacIO):
         """Deletes whatever object (if it exists) at `href`.
 
         Raises:
-            FileNotInRepositoryError
+            HrefError:
         """
         ...
 
 
-class DefaultReadableStacIOScope(Flag):
-    BASE_STAC = 1
-    """All STAC Objects under `base_href`"""
+class StacIOPerm(Flag):
+    R_STAC = 1
+    """Read STAC objects"""
 
-    BASE_ASSET = 2
-    """All assets under `base_href`"""
+    R_ANY = 1 | 2
+    """Read STAC objects and assets"""
 
-    STAC = 1 | 4
-    """All STAC Objects"""
+    W_STAC = 1 | 4
+    """Write (and read) STAC objects"""
 
-    ASSET = 2 | 8
-    """All assets"""
-
-
-def _is_file_href(self, href: str) -> bool:
-    return _urlparse(href, scheme="").scheme == ""
+    W_ANY = 1 | 2 | 4 | 8
+    """Write (and read) STAC objects and assets"""
 
 
 class DefaultReadableStacIO(ReadableStacIO):
-    """A default implementation of `ReadableStacIO` operating on the local filesystem."""
+    """A default implementation of `ReadableStacIO` operating on the local filesystem and over http(s)."""
 
-    # _scope: DefaultReadableStacIOScope = DefaultReadableStacIOScope.BASE_STAC | DefaultReadableStacIOScope.BASE_ASSET
+    _perms: Dict[str, StacIOPerm]
 
-    # @property
-    # def _is_base_file_href(self) -> bool:
-    #     return self._is_file_href(self._base_href)
+    def __init__(self, perms: Dict[str, StacIOPerm] = {}) -> None:
+        self._perms = perms
 
-    # def _is_file_href(self, href: str) -> bool:
-    #     return _urlparse(href, scheme="").scheme == ""
+    def check_perms(self, href: str, required_perm: StacIOPerm) -> bool:
+        for (base_href, perm) in self._perms.items():
+            if required_perm in perm:
+                return href.startswith(base_href)
+        else:
+            return False
 
-    # def _abs_href(self, href: str) -> str:
-    #     if self._is_base_file_href:
-    #         if self._is_file_href(href):
-    #             return posixpath.normpath(posixpath.join(self._base_href, href))
-    #         else:
-    #             return href
-    #     else:
-    #         if self._is_file_href(href):
-    #             return _urljoin(self._base_href, href)
-    #         else:
-    #             return href
-
-    # def _assert_stac_object_within_base(self, abs_href: str) -> None:
-    #     if not abs_href.startswith(self._base_href):
-    #         raise FileNotInRepositoryError(f"{abs_href} is not in repository {self._base_href}")
-
-    # def _assert_stac_object_within_readable_scope(self, abs_href: str) -> None:
-    #     if DefaultReadableStacIOScope.STAC in self._scope:
-    #         return
-    #     elif DefaultReadableStacIOScope.BASE_STAC in self._scope:
-    #         return self._assert_stac_object_within_base(abs_href)
-    #     else:
-    #         raise FileNotInRepositoryError(f"{abs_href} cannot be read, no readable scope defined")
-
-    # def _assert_asset_within_base(self, abs_href: str) -> None:
-    #     if not abs_href.startswith(self._base_href):
-    #         raise FileNotInRepositoryError(f"{abs_href} is not in repository {self._base_href}")
-
-    # def _assert_asset_within_readable_scope(self, abs_href: str) -> None:
-    #     if DefaultReadableStacIOScope.ASSET in self._scope:
-    #         return
-    #     elif DefaultReadableStacIOScope.BASE_ASSET in self._scope:
-    #         return self._assert_asset_within_base(abs_href)
-    #     else:
-    #         raise FileNotInRepositoryError(f"{abs_href} cannot be read, no readable scope defined")
-
-    def __init__(
-        self,
-        # base_href: str,
-        # scope: DefaultReadableStacIOScope = DefaultReadableStacIOScope.BASE_STAC | DefaultReadableStacIOScope.BASE_ASSET
-    ):
-        # if self._is_file_href(base_href):
-        #     self._base_href = posixpath.abspath(base_href)
-        # else:
-        #     self._base_href = base_href
-
-        # self._scope = scope
-        pass
+    @staticmethod
+    def _is_file_href(href: str) -> bool:
+        return _urlparse(href, scheme="").scheme == ""
 
     def get(self, href: str) -> Any:
-        # href = self._abs_href(href)
+        if not self.check_perms(href, StacIOPerm.R_STAC):
+            raise HrefError(f"{href} is not within readable scope")
 
-        # self._assert_stac_object_within_readable_scope(href)
+        href_scheme = _urlparse(href, scheme="").scheme
 
-        if _is_file_href(href):
+        if href_scheme == "":
             os_href = os.path.abspath(href)
 
             with open(os_href, "r+b") as object_stream:
@@ -195,7 +150,7 @@ class DefaultReadableStacIO(ReadableStacIO):
                     return orjson.loads(object_stream.read())
                 except orjson.JSONDecodeError as error:
                     raise JSONObjectError from error
-        else:
+        elif href_scheme in ["http", "https"]:
             response = requests.get(href)
 
             if response.status_code == 404:
@@ -207,34 +162,38 @@ class DefaultReadableStacIO(ReadableStacIO):
                 return response.json()
             except requests.JSONDecodeError as error:
                 raise JSONObjectError from error
+        else:
+            raise HrefError(f"{href} cannot be fetched, it is neither a file nor a http(s) URI.")
 
     @contextmanager
     def get_asset(self, href: str) -> Iterator[BinaryIO]:
-        # href = self._abs_href(href)
+        if not self.check_perms(href, StacIOPerm.R_ANY):
+            raise HrefError(f"{href} is not within readable assets scope")
 
-        # self._assert_asset_within_readable_scope(href)
+        href_scheme = _urlparse(href, scheme="").scheme
 
-        if _is_file_href(href):
+        if href_scheme == "":
             os_href = os.path.abspath(href)
 
             with open(os_href, "r+b") as asset_stream:
                 yield asset_stream
-        else:
+        elif href_scheme in ["http", "https"]:
             response = requests.get(href, stream=True)
 
-            yield response.raw
+            yield cast(BinaryIO, response.raw)
+        else:
+            raise HrefError(f"{href} cannot be fetched, it is neither a file nor a http(s) URI.")
 
 
 class DefaultStacIO(DefaultReadableStacIO, StacIO):
     """A default implementation of `StacIO` operating on the local filesystem."""
 
     def set(self, href: str, value: Any):
-        # href = self._abs_href(href)
+        if not self.check_perms(href, StacIOPerm.W_STAC):
+            raise HrefError(f"{href} is not within writeable scope")
 
-        # self._assert_stac_object_within_base(href)
-
-        if not _is_file_href(href):
-            raise FileNotInRepositoryError(f"Cannot write {href} - this is not a local file uri")
+        if _urlparse(href, scheme="").scheme != "":
+            raise HrefError(f"{href} cannot be set, it is not a file")
 
         os_href = os.path.abspath(href)
 
@@ -247,12 +206,11 @@ class DefaultStacIO(DefaultReadableStacIO, StacIO):
                 raise JSONObjectError from error
 
     def set_asset(self, href: str, value: BinaryIO):
-        # href = self._abs_href(href)
+        if not self.check_perms(href, StacIOPerm.W_ANY):
+            raise HrefError(f"{href} is not within writeable assets scope")
 
-        # self._assert_asset_within_base(href)
-
-        if not _is_file_href(href):
-            raise FileNotInRepositoryError(f"Cannot write {href} - this is not a local file uri")
+        if _urlparse(href, scheme="").scheme != "":
+            raise HrefError(f"{href} cannot be set, it is not a file")
 
         os_href = os.path.abspath(href)
 
@@ -263,12 +221,11 @@ class DefaultStacIO(DefaultReadableStacIO, StacIO):
                 asset_stream.write(chunk)
 
     def unset(self, href: str):
-        # href = self._abs_href(href)
+        if not self.check_perms(href, StacIOPerm.W_ANY):
+            raise HrefError(f"{href} is not within writeable assets scope")
 
-        # self._assert_asset_within_base(href)
-
-        if not _is_file_href(href):
-            raise FileNotInRepositoryError(f"Cannot write {href} - this is not a local file uri")
+        if _urlparse(href, scheme="").scheme != "":
+            raise HrefError(f"{href} cannot be unset, it is not a file")
 
         os_href = os.path.abspath(href)
 

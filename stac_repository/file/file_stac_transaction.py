@@ -6,24 +6,26 @@ from typing import (
     TYPE_CHECKING
 )
 
+from contextlib import contextmanager
+
 import os
 import glob
+import orjson
 
 from stac_repository.base_stac_transaction import (
     BaseStacTransaction,
     JSONObjectError,
-    FileNotInRepositoryError
 )
 
 from stac_repository.stac.stac_io import (
-    DefaultStacIO
+    HrefError
 )
 
 if TYPE_CHECKING:
     from .file_stac_repository import FileStacRepository
 
 
-class FileStacTransaction(DefaultStacIO, BaseStacTransaction):
+class FileStacTransaction(BaseStacTransaction):
 
     def __init__(self, repository: "FileStacRepository"):
         self._base_href = repository._base_href
@@ -91,43 +93,80 @@ class FileStacTransaction(DefaultStacIO, BaseStacTransaction):
         self._unlock()
 
     def get(self, href: str):
+        if not href.startswith(self._base_href):
+            raise HrefError(f"{href} is outside of repository {self._base_href}")
+
+        file = os.path.abspath(href)
+
         try:
-            return super().get(f"{href}.tmp")
+            with open(f"{file}.tmp", "r+b") as object_stream:
+                try:
+                    return orjson.loads(object_stream.read())
+                except orjson.JSONDecodeError as error:
+                    raise JSONObjectError from error
         except FileNotFoundError:
             pass
 
-        return super().get(href)
+        with open(file, "r+b") as object_stream:
+            try:
+                return orjson.loads(object_stream.read())
+            except orjson.JSONDecodeError as error:
+                raise JSONObjectError from error
 
+    @contextmanager
     def get_asset(self, href: str):
+        if not href.startswith(self._base_href):
+            raise HrefError(f"{href} is outside of repository {self._base_href}")
+
+        file = os.path.abspath(href)
+
         try:
-            return super().get_asset(f"{href}.tmp")
+            with open(f"{file}.tmp", "r+b") as asset_stream:
+                yield asset_stream
         except FileNotFoundError:
             pass
 
-        return super().get_asset(href)
+        with open(file, "r+b") as asset_stream:
+            yield asset_stream
 
     def set(self, href: str, value: Any):
-        return super().set(f"{href}.tmp", value)
+        if not href.startswith(self._base_href):
+            raise HrefError(f"{href} is outside of repository {self._base_href}")
 
-    def unset(self, href: str):
-        href = self._abs_href(href)
+        file = os.path.abspath(href)
 
-        self._assert_asset_within_base(href)
+        os.makedirs(os.path.dirname(file), exist_ok=True)
 
-        if not self._is_file_href(href):
-            raise FileNotInRepositoryError(f"Cannot write {href} - this is not a local file uri")
-
-        os_href = os.path.abspath(href)
-
-        try:
-            os.rename(os_href, f"{os_href}.bck")
-        except FileNotFoundError:
-            pass
-
-        try:
-            os.rename(f"{os_href}.tmp", f"{os_href}.bck")
-        except FileNotFoundError:
-            pass
+        with open(f"{file}.tmp", "w+b") as object_stream:
+            try:
+                object_stream.write(orjson.dumps(value))
+            except orjson.JSONEncodeError as error:
+                raise JSONObjectError from error
 
     def set_asset(self, href: str, value: BinaryIO):
-        return super().set_asset(f"{href}.tmp", value)
+        if not href.startswith(self._base_href):
+            raise HrefError(f"{href} is outside of repository {self._base_href}")
+
+        file = os.path.abspath(href)
+
+        os.makedirs(os.path.dirname(file), exist_ok=True)
+
+        with open(f"{file}.tmp", "w+b") as asset_stream:
+            while (chunk := value.read()):
+                asset_stream.write(chunk)
+
+    def unset(self, href: str):
+        if not href.startswith(self._base_href):
+            raise HrefError(f"{href} is outside of repository {self._base_href}")
+
+        file = os.path.abspath(href)
+
+        try:
+            os.rename(file, f"{file}.bck")
+        except FileNotFoundError:
+            pass
+
+        try:
+            os.rename(f"{file}.tmp", f"{file}.bck")
+        except FileNotFoundError:
+            pass

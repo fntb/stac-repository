@@ -15,12 +15,12 @@ import contextlib
 import os
 import logging
 import posixpath
+from urllib.parse import urlparse, urljoin
 
 from .stac import (
     StacIO,
-    DefaultStacIO,
+    StacIOPerm,
     DefaultReadableStacIO,
-    DefaultReadableStacIOScope,
     Item,
     Collection,
     Catalog,
@@ -33,8 +33,8 @@ from .stac import (
     search,
     compute_extent,
     StacObjectError,
-    JSONObjectError,
-    FileNotInRepositoryError
+    HrefError,
+    JSONObjectError
 )
 
 if TYPE_CHECKING:
@@ -46,27 +46,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__file__)
 
 
-class ObjectNotFoundError(FileNotFoundError):
+class CatalogError(ValueError):
+    """Generic fatal cataloging error"""
     pass
 
 
-class ParentNotFoundError(ObjectNotFoundError):
-    pass
-
-
-class ParentCatalogError(ValueError):
-    pass
-
-
-class RootUncatalogError(ValueError):
-    pass
-
-
-class RootCatalogError(ValueError):
+class UncatalogError(ValueError):
+    """Generic fatal uncataloging error"""
     pass
 
 
 class BaseStacTransaction(StacIO, metaclass=ABCMeta):
+
+    _base_href: str
+    """The base href of this repository.
+    
+    This value is used as the repository scope, stac objects and assets href falling outside of this scope will not be writeable
+    and will need to be read from an external source.
+    
+    **This value must be a base uri or absolute posix path.**
+    """
 
     @abstractmethod
     def __init__(self, repository: "BaseStacRepository"):
@@ -110,69 +109,81 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         """Catalogs a product.
 
         Raises:
-            ObjectNotFoundError: Product does not exist or is outside of repository
-            StacObjectError: Product is not a valid STAC Object
-            ParentNotFoundError: Parent not found in catalog
-            ParentCatalogError: Parent not suitable (Item)
-            RootCatalogError: Product has the same id as the root and would thus replace it
+            FileNotFoundError: Product source does not exist
+            StacObjectError: Product source is not a valid STAC object
+            HrefError:  Product source href (scheme) cannot be processed
+            UncatalogError:
+                - Old product version couldn't be deleted sucessfully
+                - Cannot uncatalog the root
+            CatalogError:
         """
 
-        product_scope = DefaultReadableStacIOScope.BASE_STAC
+        if urlparse(product_file, scheme="").scheme == "":
+            product_file = posixpath.abspath(product_file)
+            product_base = posixpath.dirname(product_file)
+        else:
+            product_url = urlparse(product_file)
+            product_base_url = product_url._replace(path=posixpath.dirname(product_url.path))
+            product_base = product_base_url.geturl()
+
+        perms = {}
+
         if catalog_assets:
-            product_scope |= DefaultReadableStacIOScope.BASE_ASSET
+            perms = {
+                **perms,
+                product_base: StacIOPerm.R_ANY
+            }
+
         if catalog_out_of_scope:
-            product_scope |= DefaultReadableStacIOScope.STAC
+            perms = {
+                **perms,
+                "/": StacIOPerm.R_STAC,
+                "http://": StacIOPerm.R_STAC,
+                "https://": StacIOPerm.R_STAC,
+            }
+
         if catalog_assets_out_of_scope:
-            product_scope |= DefaultReadableStacIOScope.ASSET
+            perms = {
+                **perms,
+                "/": StacIOPerm.R_ANY,
+                "http://": StacIOPerm.R_ANY,
+                "https://": StacIOPerm.R_ANY,
+            }
 
-        product_store = DefaultReadableStacIO(
-            base_href=os.path.dirname(product_file),
-            scope=product_scope
+        product = load(
+            product_file,
+            resolve_descendants=True,
+            resolve_assets=True,
+            io=DefaultReadableStacIO(perms),
         )
-
-        try:
-            product = load(
-                product_file,
-                resolve_descendants=True,
-                resolve_assets=True,
-                store=product_store
-            )
-        except FileNotFoundError as error:
-            raise ObjectNotFoundError(f"{product_file} does not exist") from error
-        except StacObjectError as error:
-            raise StacObjectError(f"{product_file} is not a valid STAC Object") from error
-        except FileNotInRepositoryError as error:
-            raise ObjectNotFoundError(
-                f"{product_file} cannot be retrieved outside of repository '{os.path.dirname(product_file)}'"
-            ) from error
 
         unset_parent(product)
 
         try:
             self.uncatalog(product.id)
-        except ObjectNotFoundError:
+        except FileNotFoundError:
             pass
 
         if parent_id is None:
             try:
                 parent = load(
                     self._catalog_href,
-                    store=self,
+                    io=self,
                 )
-            except (FileNotFoundError, FileNotInRepositoryError, StacObjectError) as error:
-                raise ParentNotFoundError(f"Catalog root not found") from error
+            except (FileNotFoundError, HrefError, StacObjectError) as error:
+                raise CatalogError(f"Couldn't load catalog root : {str(error)}") from error
         else:
             parent = search(
                 self._catalog_href,
                 id=parent_id,
-                store=self
+                io=self,
             )
 
-        if parent is None:
-            raise ParentNotFoundError(f"Parent {parent_id} not found in catalog")
+            if parent is None:
+                raise CatalogError(f"Parent {parent_id} not found in catalog")
 
         if isinstance(parent, Item):
-            raise ParentCatalogError(f"Cannot catalog under {parent_id}, this is an Item")
+            raise CatalogError(f"Cannot catalog under {parent_id}, this is an Item")
 
         set_parent(product, parent)
 
@@ -180,7 +191,7 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         while True:
             if isinstance(last_ancestor, Collection):
                 try:
-                    last_ancestor.extent = compute_extent(last_ancestor, store=self)
+                    last_ancestor.extent = compute_extent(last_ancestor, io=self)
                 except StacObjectError as error:
                     logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
                     break
@@ -188,9 +199,9 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
             try:
                 ancestor = load_parent(
                     last_ancestor,
-                    store=self,
+                    io=self,
                 )
-            except FileNotInRepositoryError as error:
+            except (HrefError) as error:
                 logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
                 break
 
@@ -199,10 +210,15 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
             else:
                 last_ancestor = ancestor
 
-        save(
-            last_ancestor,
-            store=self
-        )
+        try:
+            save(
+                last_ancestor,
+                io=self
+            )
+        except HrefError as error:
+            raise CatalogError(
+                f"{product.id} ({product_file}) couldn't be saved successfully : {str(error)}"
+            ) from error
 
     def uncatalog(
         self,
@@ -211,55 +227,63 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         """Uncatalogs a product.
 
         Raises:
-            ObjectNotFoundError
-            ParentNotFoundError
-            RootUncatalogError: The product is the catalog root
+            FileNotFoundError: Product couldn't be found in catalog
+            UncatalogError: 
+                - Product couldn't be deleted (completely)
+                - Cannot uncatalog the root
         """
 
         product = search(
             self._catalog_href,
             product_id,
-            store=self
+            io=self,
         )
 
         if product is None:
-            raise ObjectNotFoundError(f"Product {product_id} not found in catalog")
+            raise FileNotFoundError(f"Product {product_id} not found in catalog")
 
         try:
-            parent = load_parent(product, store=self)
-        except FileNotInRepositoryError as error:
-            raise ParentNotFoundError("Parent not found in catalog") from error
+            parent = load_parent(product, io=self)
+        except (HrefError) as error:
+            logger.exception(
+                f"[{type(error).__name__}] Skip recomputing parent child links as parent cannot be found inside the repository : {str(error)}")
 
-        if parent is None:
-            raise RootUncatalogError(f"Cannot uncatalog the root")
+            delete(product, io=self)
+        else:
+            if parent is None:
+                raise UncatalogError(f"Cannot uncatalog the root")
 
-        unset_parent(product)
-        delete(product, store=self)
+            unset_parent(product)
+            delete(product, io=self)
 
-        last_ancestor: Union[Item, Collection, Catalog] = parent
-        while True:
-            if isinstance(last_ancestor, Collection):
+            last_ancestor: Union[Item, Collection, Catalog] = parent
+            while True:
+                if isinstance(last_ancestor, Collection):
+                    try:
+                        last_ancestor.extent = compute_extent(last_ancestor, io=self)
+                    except StacObjectError as error:
+                        logger.exception(
+                            f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                        break
+
                 try:
-                    last_ancestor.extent = compute_extent(last_ancestor, store=self)
-                except StacObjectError as error:
+                    ancestor = load_parent(
+                        last_ancestor,
+                        io=self,
+                    )
+                except (HrefError) as error:
                     logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
                     break
 
+                if ancestor is None:
+                    break
+                else:
+                    last_ancestor = ancestor
+
             try:
-                ancestor = load_parent(
+                save(
                     last_ancestor,
-                    store=self,
+                    io=self
                 )
-            except FileNotInRepositoryError as error:
-                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
-                break
-
-            if ancestor is None:
-                break
-            else:
-                last_ancestor = ancestor
-
-        save(
-            last_ancestor,
-            store=self
-        )
+            except HrefError as error:
+                raise UncatalogError(f"{product_id} couldn't be deleted sucessfully : {str(error)}") from error

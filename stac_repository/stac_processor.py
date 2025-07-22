@@ -7,13 +7,14 @@ import os
 import mimetypes
 import uuid
 import logging
+import posixpath
 from urllib.parse import urlparse
 
 
 from .stac import (
     load,
     DefaultReadableStacIO,
-    DefaultReadableStacIOScope,
+    StacIOPerm,
     get_version,
     VersionNotFoundError,
     StacObjectError
@@ -38,7 +39,12 @@ class StacProcessor(Processor):
                 return False
 
             try:
-                load(file, store=DefaultReadableStacIO(base_href=file))
+                load(
+                    file,
+                    io=DefaultReadableStacIO({
+                        posixpath.abspath(file): StacIOPerm.R_STAC
+                    })
+                )
             except StacObjectError as error:
                 logger.info(f"Skipped {file} : {str(error)}")
                 return False
@@ -68,7 +74,12 @@ class StacProcessor(Processor):
         if urlparse(product_source, scheme="").scheme == "":
             product_source = os.path.abspath(product_source)
 
-        return load(product_source, store=DefaultReadableStacIO(base_href=product_source)).id
+        return load(
+            product_source,
+            io=DefaultReadableStacIO({
+                posixpath.abspath(product_source): StacIOPerm.R_STAC
+            })
+        ).id
 
     @staticmethod
     def version(product_source: str) -> str:
@@ -76,7 +87,14 @@ class StacProcessor(Processor):
             product_source = os.path.abspath(product_source)
 
         try:
-            return get_version(load(product_source, store=DefaultReadableStacIO(base_href=product_source)))
+            return get_version(
+                load(
+                    product_source,
+                    io=DefaultReadableStacIO({
+                        posixpath.abspath(product_source): StacIOPerm.R_STAC
+                    })
+                )
+            )
         except VersionNotFoundError as error:
             logger.info(f"No version found {product_source}, generating random")
             return uuid.uuid4().hex

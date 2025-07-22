@@ -47,18 +47,13 @@ from pydantic import (
     AnyUrl
 )
 
-if sys.version_info >= (3, 10):
-    from typing import TypeGuard
-else:
-    from typing_extensions import TypeGuard
-
 
 class Link(_Link):
     _target: Optional[Union[Item, Collection, Catalog]] = None
 
     @property
     def target(self) -> Optional[Union[Item, Collection, Catalog]]:
-        """The resolved STAC Object."""
+        """The resolved STAC object."""
         # if self._target is None:
         #     raise AttributeError(f"{self.rel.capitalize()} link '{self.href}' is not resolved")
 
@@ -73,17 +68,17 @@ class Asset(_Asset):
     _target: Optional[Callable[[], AbstractContextManager[BinaryIO]]] = None
 
     @property
-    @contextmanager
-    def target(self) -> Iterator[Optional[BinaryIO]]:
-        """The resolved Asset file stream."""
-        # if self._target is None:
-        #     raise AttributeError(f"Asset '{self.href}' is not resolved")
+    def target(self) -> Optional[Callable[[], AbstractContextManager[BinaryIO]]]:
+        """The (yet) resolved STAC asset.
 
-        if self._target is None:
-            yield None
-        else:
-            with self._target() as target:
-                yield target
+        Returns
+            A callable implementing the contextmanager protocol and which may raise [see Raises]
+
+        Raises
+            HrefError:
+            FileNotFoundError:
+        """
+        return self._target
 
     @target.setter
     def target(self, value: Optional[Callable[[], AbstractContextManager[BinaryIO]]]):

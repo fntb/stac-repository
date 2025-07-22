@@ -34,7 +34,10 @@ from .stac import (
     Catalog
 )
 
-from .base_stac_commit import BaseStacCommit
+from .base_stac_commit import (
+    BaseStacCommit,
+    BackupValueError
+)
 
 from .processor import Processor
 from .processors import (
@@ -48,11 +51,9 @@ from .job_report import (
 from .base_stac_transaction import (
     BaseStacTransaction,
     StacObjectError,
-    ParentCatalogError,
-    RootUncatalogError,
-    RootCatalogError,
-    ParentNotFoundError,
-    ObjectNotFoundError
+    HrefError,
+    CatalogError,
+    UncatalogError,
 )
 
 from .stac import (
@@ -91,10 +92,11 @@ class ProcessorNotFoundError(ValueError):
 
 
 class ProcessingError(Exception):
+    """Wrapper exception type for any type of error raised by a processor."""
     pass
 
 
-class ProcessingErrors(Exception):
+class ErrorGroup(Exception):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -255,12 +257,14 @@ class BaseStacRepository(metaclass=ABCMeta):
         """Ingests a product.
 
         Raises:
-            ProcessingError: The processor raised an error
-            ObjectNotFoundError: Product does not exist or is outside of the repository
-            StacObjectError: Product is not a valid STAC Object
-            ParentNotFoundError: Parent not found in catalog
-            ParentCatalogError: Parent not suitable (Item)
-            RootCatalogError: Product has the same id as the root and would thus replace it
+            ProcessingError: Processor raised an error
+            FileNotFoundError: Product source does not exist
+            StacObjectError: Product source is not a valid STAC object
+            HrefError:  Product source href (scheme) cannot be processed
+            UncatalogError:
+                - Old product version couldn't be deleted sucessfully
+                - Cannot uncatalog the root
+            CatalogError:
         """
         reporter = JobReportBuilder(product_source)
 
@@ -271,7 +275,7 @@ class BaseStacRepository(metaclass=ABCMeta):
                 product_id = processor.id(product_source)
                 product_version = processor.version(product_source)
             except Exception as error:
-                raise ProcessingError from error
+                raise ProcessingError(str(error)) from error
 
             head = next(self.commits)
             cataloged_stac_object = head.search(product_id)
@@ -280,7 +284,7 @@ class BaseStacRepository(metaclass=ABCMeta):
                 try:
                     if product_version == _get_version(cataloged_stac_object):
                         raise SkipIteration
-                except _VersionNotFoundError as error:
+                except (_VersionNotFoundError, StacObjectError) as error:
                     yield reporter.progress("Product found but unversionned, reprocessing")
                 else:
                     yield reporter.progress("Previous version of the product found, reprocessing")
@@ -290,7 +294,7 @@ class BaseStacRepository(metaclass=ABCMeta):
             try:
                 processed_stac_object_file = processor.process(product_source)
             except Exception as error:
-                raise ProcessingError from error
+                raise ProcessingError(str(error)) from error
 
             yield reporter.progress("Cataloging")
 
@@ -321,13 +325,16 @@ class BaseStacRepository(metaclass=ABCMeta):
         """Discover and ingest products from some source(s).
 
         Raises:
-            ProcessingError: The processor raised an error
-            ObjectNotFoundError: Product does not exist or is outside of repository
-            StacObjectError: Product is not a valid STAC Object
-            ParentNotFoundError: Parent not found in catalog
-            ParentCatalogError: Parent not suitable (Item)
-            RootCatalogError: Product has the same id as the root and would thus replace it
-            Dict[str, Exception]: Map of source/product_source to Exceptions (any of the above)
+            ProcessorNotFoundError:
+            ErrorGroup:
+            ProcessingError: Processor raised an error
+            FileNotFoundError: Product source does not exist
+            StacObjectError: Product source is not a valid STAC object
+            HrefError:  Product source href (scheme) cannot be processed
+            UncatalogError:
+                - Old product version couldn't be deleted sucessfully
+                - Cannot uncatalog the root
+            CatalogError:
         """
         processor: Optional[Processor] = discovered_processors.get(processor_id)
 
@@ -336,7 +343,7 @@ class BaseStacRepository(metaclass=ABCMeta):
 
         product_sources = []
 
-        errors = ProcessingErrors()
+        errors = ErrorGroup()
 
         for source in sources:
             reporter = JobReportBuilder(source)
@@ -347,7 +354,7 @@ class BaseStacRepository(metaclass=ABCMeta):
                 product_sources.extend(discovered_product_sources)
             except Exception as error:
                 try:
-                    raise ProcessingError from error
+                    raise ProcessingError(str(error)) from error
                 except ProcessingError as error:
                     yield reporter.fail(error)
                     errors[f"source={source}"] = error
@@ -385,11 +392,10 @@ class BaseStacRepository(metaclass=ABCMeta):
         """Removes some product(s) from the catalog.
 
         Raises:
-            RootUncatalogError: The product is the catalog root
-            ParentNotFoundError
-            Dict[str, Exception]: Map of ids to Exceptions (any of the above)
+            ErrorGroup:
+            UncatalogError:
         """
-        errors = ProcessingErrors()
+        errors = ErrorGroup()
 
         transaction_message = "Prune : \n\n - " + "\n - ".join(product_ids)
         with self.StacTransaction(self).context(message=transaction_message) as transaction:
@@ -403,7 +409,7 @@ class BaseStacRepository(metaclass=ABCMeta):
 
                     try:
                         transaction.uncatalog(product_id)
-                    except ObjectNotFoundError:
+                    except FileNotFoundError:
                         yield reporter.complete("Not found in catalog")
                     else:
                         yield reporter.complete("Uncataloged")

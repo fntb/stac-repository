@@ -48,7 +48,7 @@ from .stac_io import (
     ReadableStacIO,
     StacIO,
     JSONObjectError,
-    FileNotInRepositoryError
+    HrefError
 )
 
 logger = logging.getLogger(__file__)
@@ -56,12 +56,12 @@ logger = logging.getLogger(__file__)
 
 class StacObjectError(ValueError):
     """Object does not conform to STAC specs."""
-    ...
+    pass
 
 
 class VersionNotFoundError(ValueError):
-    """STAC Object is not versioned."""
-    ...
+    """STAC object is not versioned."""
+    pass
 
 
 def urlrel(href: str, base_href: str) -> str:
@@ -86,44 +86,14 @@ def urlpath(href: str) -> str:
     return _urlparse(href).path
 
 
-class StacIOScope(Flag):
-    REPOSITORY_STAC = 1
-    """All STAC Objects under `base_href`"""
-
-    REPOSITORY_ASSET = 2
-    """All assets under `base_href`"""
-
-    STAC = 1 | 4
-    """All STAC Objects"""
-
-    ASSET = 2 | 8
-    """All assets"""
-
-
-class StacIOScopeGuard():
-
-    _base_href: str
-    _scope: StacIOScope
-
-    def __init__(self, base_href: str, scope: StacIOScope):
-        self._base_href = base_href
-        self._scope = scope
-
-    def is_stac_object_in_scope(href: str) -> bool:
-        pass
-
-    def is_stac_asset_in_scope(href: str) -> bool:
-        pass
-
-
 def load(
     href: str,
     *,
     resolve_descendants: bool = False,
     resolve_assets: bool = False,
-    io: ReadableStacIO
+    io: ReadableStacIO,
 ) -> Union[Item, Collection, Catalog]:
-    """Loads and validates a STAC Object.
+    """Loads and validates a STAC object.
 
     Computes Link and Asset absolute hrefs.
 
@@ -134,18 +104,18 @@ def load(
 
     Raises:
         FileNotFoundError: The (root) href doesn't exist
-        FileNotInRepositoryError: The (root) href is not in the repository
-        StacObjectError: The retrieved (root) JSON Object is not a valid representation of a STAC Object
+        StacObjectError: The retrieved (root) JSON object is not a valid representation of a STAC object
+        HrefError: The (root) href cannot be processed by this StacIO instance
     """
     try:
         json_object = io.get(href)
     except JSONObjectError as error:
-        raise StacObjectError(f"{href} is not a JSON Object : {str(error)}") from error
+        raise StacObjectError(f"{href} is not a JSON object : {str(error)}") from error
 
     try:
         typed_object = StacObject.model_validate(json_object)
     except ValidationError:
-        raise StacObjectError(f"{href} is not a STAC Object : missing 'type' property")
+        raise StacObjectError(f"{href} is not a STAC object : missing 'type' property")
 
     try:
         if typed_object.type == "Feature":
@@ -155,9 +125,9 @@ def load(
         elif typed_object.type == "Catalog":
             stac_object = Catalog.model_validate(json_object, context=href)
         else:
-            raise StacObjectError(f"{href} doesn't have a valid STAC Object type : '{typed_object.type}'")
+            raise StacObjectError(f"{href} doesn't have a valid STAC object type : '{typed_object.type}'")
     except ValidationError as error:
-        raise StacObjectError(f"{href} is not a valid STAC Object : {str(error)}") from error
+        raise StacObjectError(f"{href} is not a valid STAC object : {str(error)}") from error
 
     for link in stac_object.links:
         link.href = urljoin(href, link.href)
@@ -166,16 +136,14 @@ def load(
         for asset in stac_object.assets.values():
             asset.href = urljoin(href, asset.href)
 
-            if resolve_assets and asset.href.startswith(io._base_href):
+            if resolve_assets:
                 asset.target = lambda href=asset.href: io.get_asset(href)
 
     if resolve_descendants:
         resolved_links: List[Link] = []
 
         for link in stac_object.links:
-            if not link.href.startswith(io._base_href):
-                resolved_links.append(link)
-            elif link.rel not in ["child", "item"]:
+            if link.rel not in ["child", "item"]:
                 resolved_links.append(link)
             else:
                 try:
@@ -183,10 +151,17 @@ def load(
                         link.href,
                         resolve_descendants=resolve_descendants,
                         resolve_assets=resolve_assets,
-                        io=io
+                        io=io,
                     )
+                except HrefError as error:
+                    logger.exception(
+                        f"[{type(error).__name__}] Ignored child {link.href} link resolution : {str(error)}"
+                    )
+                    resolved_links.append(link)
                 except (FileNotFoundError, StacObjectError) as error:
-                    logger.exception(f"[{type(error).__name__}] Ignored object {link.href} : {str(error)}")
+                    logger.exception(
+                        f"[{type(error).__name__}] Stipped child {link.href} from parent links : {str(error)}"
+                    )
                 else:
                     link.target = child
 
@@ -212,13 +187,13 @@ def load_parent(
     resolve_assets: bool = False,
     io: ReadableStacIO,
 ) -> Optional[Union[Item, Collection, Catalog]]:
-    """Loads and validate the parent of a STAC Object, if it has one. Resolves links.
+    """Loads and validate the parent of a STAC object, if it has one. Resolves links.
 
     If the parent does not exist (i.e. FileNotFoundError) or is not valid STAC Objects (i.e. StacObjectError)
     it is ignored and the link is removed from the child.
 
     Raises:
-        FileNotInRepositoryError: Parent is not in the repository
+        HrefError: Parent cannot be retrieved
     """
 
     def resolve_child_link(parent: Union[Item, Collection, Catalog]):
@@ -266,7 +241,7 @@ def set_parent(
     stac_object: Union[Item, Collection, Catalog],
     parent: Union[Collection, Catalog],
 ):
-    """Sets the parent link of a STAC Object and the parent child link. Resolves them."""
+    """Sets the parent link of a STAC object and the parent child link. Resolves them."""
 
     unset_parent(stac_object)
 
@@ -312,7 +287,7 @@ def set_parent(
 def unset_parent(
     stac_object: Union[Item, Collection, Catalog],
 ):
-    """Removes the parent link of a STAC Object.
+    """Removes the parent link of a STAC object.
 
     If the link is resolved then the child links are removed from the parent.
     """
@@ -342,16 +317,16 @@ def search(
     root_href: Union[str, Item, Collection, Catalog],
     id: str,
     *,
-    io: ReadableStacIO
+    io: ReadableStacIO,
 ) -> Optional[Union[Item, Collection, Catalog]]:
-    """Walks the catalog - without loading it all into memory at once - to find a STAC Object with some id."""
+    """Walks the catalog - without loading it all into memory at once - to find a STAC object with some id."""
 
     try:
         stac_object = load(
             root_href if isinstance(root_href, str) else root_href.self_href,
-            io=io
+            io=io,
         )
-    except (FileNotFoundError, StacObjectError, FileNotInRepositoryError) as error:
+    except (FileNotFoundError, StacObjectError, HrefError) as error:
         logger.exception(f"[{type(error).__name__}] Ignored object {root_href} : {str(error)}")
         return None
 
@@ -362,13 +337,10 @@ def search(
             if link.rel not in ("item", "child"):
                 continue
 
-            if not link.href.startswith(io._base_href):
-                continue
-
             found_object = search(
                 link.href,
                 id,
-                io=io
+                io=io,
             )
 
             if found_object is not None:
@@ -383,9 +355,12 @@ def save(
     io: StacIO,
 ):
     """Normalizes and saves a STAC object and its resolved descendants and assets.
+
+    Raises:
+        HrefError: Stac object could not be saved to its self_href
     """
 
-    normalized_links: List[Link] = []
+    saved_links: List[Link] = []
 
     for link in stac_object.links:
         if link.rel in ["self", "root", "alternate"]:
@@ -394,22 +369,30 @@ def save(
         link.href = urlrel(link.href, stac_object.self_href)
 
         if link.target is None:
-            normalized_links.append(link)
-            continue
-
-        if link.rel in ["child", "item"]:
+            saved_links.append(link)
+        elif link.rel in ["child", "item"]:
             child = link.target
+            saved_child_href: str
 
             if isinstance(child, Item):
-                link.href = posixpath.join(".", child.id, f"{child.id}.json")
+                saved_child_href = posixpath.join(".", child.id, f"{child.id}.json")
             elif isinstance(child, Collection):
-                link.href = posixpath.join(".", child.id, "collection.json")
+                saved_child_href = posixpath.join(".", child.id, "collection.json")
             elif isinstance(child, Catalog):
-                link.href = posixpath.join(".", child.id, "catalog.json")
+                saved_child_href = posixpath.join(".", child.id, "catalog.json")
             else:
                 raise TypeError(f"Unexpected child type : {type(child).__name__}")
 
-            child.self_href = urljoin(stac_object.self_href, link.href)
+            child.self_href = urljoin(stac_object.self_href, saved_child_href)
+
+            try:
+                save(child, io=io)
+            except HrefError as error:
+                pass
+
+            link.href = saved_child_href
+
+            saved_links.append(link)
 
         elif link.rel == "parent":
             parent = link.target
@@ -421,6 +404,8 @@ def save(
             else:
                 raise TypeError(f"Unexpected parent type : {type(parent).__name__}")
 
+            saved_links.append(link)
+
         elif link.rel == "collection":
             parent = link.target
 
@@ -429,14 +414,9 @@ def save(
             else:
                 raise TypeError(f"Unexpected collection type : {type(parent).__name__}")
 
-        normalized_links.append(link)
+            saved_links.append(link)
 
-    stac_object.links = normalized_links
-
-    for link in stac_object.links:
-        if link.target is not None:
-            if link.rel in ["child", "item"]:
-                save(link.target, io=io)
+    stac_object.links = saved_links
 
     if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
         for asset in stac_object.assets.values():
@@ -448,18 +428,26 @@ def save(
         saved_assets: Dict[str, Asset] = {}
 
         for (key, asset) in stac_object.assets.items():
-            with asset.target as asset_stream:
-                if asset_stream is not None:
-                    try:
-                        io.set_asset(urljoin(stac_object.self_href, asset.href), asset_stream)
+            if asset.target is not None:
+                saved_asset_href = posixpath.join(".", posixpath.basename(urlpath(asset.href)))
 
-                        asset.target = lambda href=urljoin(stac_object.self_href, asset.href): io.get_asset(href)
-                    except FileNotFoundError as error:
-                        logger.exception(
-                            f"[{type(error).__name__}] Ignored asset {urljoin(stac_object.self_href, asset.href)} : {str(error)}"
-                        )
-                    else:
-                        saved_assets[key] = asset
+                try:
+                    with asset.target() as asset_stream:
+                        io.set_asset(urljoin(stac_object.self_href, saved_asset_href), asset_stream)
+                except FileNotFoundError as error:
+                    logger.exception(
+                        f"[{type(error).__name__}] Ignored asset {urljoin(stac_object.self_href, asset.href)} : {str(error)}"
+                    )
+                except HrefError as error:
+                    saved_assets[key] = asset
+                else:
+                    asset.href = saved_asset_href
+                    asset.target = lambda href=urljoin(stac_object.self_href, asset.href): io.get_asset(href)
+
+                    saved_assets[key] = asset
+            else:
+                asset.href = urlrel(asset.href, stac_object.self_href)
+                saved_assets[key] = asset
 
         stac_object.assets = saved_assets
 
@@ -472,11 +460,12 @@ def export(
     *,
     io: StacIO,
 ):
-    """Exports a STAC Object and all its descendants and assets.
+    """Exports a STAC object and all its descendants and assets.
 
     Raises:
         FileExistsError
     """
+    raise NotImplementedError
 
     file = os.path.abspath(file)
     dir = os.path.dirname(file)
@@ -548,9 +537,36 @@ def delete(
     *,
     io: StacIO,
 ):
-    """Deletes a STAC object and all its descendants and assets.
+    """Deletes a STAC object and all its descendants and assets as best as it can.
     """
-    if isinstance(href_or_stac_object, str):
+    href: str
+    stac_object: Optional[Union[Item, Collection, Catalog]] = None
+
+    def silent_unset(href: str):
+        try:
+            io.unset(href)
+        except HrefError as error:
+            pass
+
+    def delete_assets(stac_object: Union[Item, Collection, Catalog]):
+        if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
+            for asset in stac_object.assets.values():
+                silent_unset(asset.href)
+
+    def delete_children(stac_object: Union[Item, Collection, Catalog]):
+        if isinstance(stac_object, (Collection, Catalog)):
+            for link in stac_object.links:
+                if link.rel in ["child", "item"]:
+                    delete(link.href, io=io)
+
+    if isinstance(href_or_stac_object, (Item, Collection, Catalog)):
+        stac_object = href_or_stac_object
+
+        delete_assets(stac_object)
+        delete_children(stac_object)
+        silent_unset(stac_object.self_href)
+
+    elif isinstance(href_or_stac_object, str):
         href = href_or_stac_object
 
         try:
@@ -558,27 +574,21 @@ def delete(
                 href,
                 io=io,
             )
-        except FileNotInRepositoryError:
-            stac_object = None
-        except (FileNotFoundError, StacObjectError) as error:
+        except FileNotFoundError as error:
+            return
+        except HrefError as error:
+            return
+        except StacObjectError as error:
             logger.exception(
-                f"[{type(error).__name__}] Couldn't load object {href} - removing it will potentially create unreachable orphans : {str(error)}"
+                f"[{type(error).__name__}] {href} is not a valid Stac object - removing it may create unreachable orphans : {str(error)}"
             )
-            stac_object = None
+            silent_unset(href)
+        else:
+            delete_assets(stac_object)
+            delete_children(stac_object)
+            silent_unset(href)
     else:
-        href = href_or_stac_object.self_href
-        stac_object = href_or_stac_object
-
-    if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
-        for asset in stac_object.assets.values():
-            io.unset(asset.href)
-
-    if isinstance(stac_object, (Collection, Catalog)):
-        for link in stac_object.links:
-            if link.rel in ["child", "item"]:
-                delete(link.href, io=io)
-
-    io.unset(href)
+        raise TypeError(f"{type(href_or_stac_object)} is neither a Stac object or uri")
 
 
 @overload
@@ -757,7 +767,7 @@ def compute_extent(
                     link.href,
                     io=io,
                 )
-            except (FileNotFoundError, StacObjectError, FileNotInRepositoryError) as error:
+            except (FileNotFoundError, StacObjectError, HrefError) as error:
                 logger.exception(
                     f"[{type(error).__name__}] Ignored child {link.href} while computing extent : {str(error)}")
                 continue

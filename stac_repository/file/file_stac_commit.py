@@ -5,51 +5,70 @@ from typing import (
     TYPE_CHECKING
 )
 
+from contextlib import contextmanager
+
 import os
 import datetime
 import shutil
 from urllib.parse import urlparse as _urlparse
 
-from stac_repository.base_stac_transaction import (
-    BaseStacTransaction,
-    JSONObjectError,
-    FileNotInRepositoryError
-)
+import orjson
 
 from stac_repository.base_stac_commit import (
     BaseStacCommit,
-    BackupValueError
+    BackupValueError,
 )
 
 from stac_repository.stac.stac_io import (
-    DefaultStacIO,
-    DefaultReadableStacIO
+    HrefError,
+    JSONObjectError
 )
 
 if TYPE_CHECKING:
     from .file_stac_repository import FileStacRepository
 
 
-class FileStacCommit(DefaultReadableStacIO, BaseStacCommit):
+class FileStacCommit(BaseStacCommit):
 
     def __init__(self, repository: "FileStacRepository"):
         self._base_href = repository._base_href
 
     def get(self, href: str):
+        if not href.startswith(self._base_href):
+            raise HrefError(f"{href} is outside of repository {self._base_href}")
+
+        file = os.path.abspath(href)
+
         try:
-            return super().get(f"{href}.bck")
+            with open(f"{file}.bck", "r+b") as object_stream:
+                try:
+                    return orjson.loads(object_stream.read())
+                except orjson.JSONDecodeError as error:
+                    raise JSONObjectError from error
         except FileNotFoundError:
             pass
 
-        return super().get(href)
+        with open(file, "r+b") as object_stream:
+            try:
+                return orjson.loads(object_stream.read())
+            except orjson.JSONDecodeError as error:
+                raise JSONObjectError from error
 
+    @contextmanager
     def get_asset(self, href: str):
+        if not href.startswith(self._base_href):
+            raise HrefError(f"{href} is outside of repository {self._base_href}")
+
+        file = os.path.abspath(href)
+
         try:
-            return super().get_asset(f"{href}.bck")
+            with open(f"{file}.bck", "r+b") as asset_stream:
+                yield asset_stream
         except FileNotFoundError:
             pass
 
-        return super().get_asset(href)
+        with open(file, "r+b") as asset_stream:
+            yield asset_stream
 
     @property
     def id(self) -> str:

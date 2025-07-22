@@ -33,7 +33,9 @@ from ..base_stac_repository import (
 )
 from ..stac import (
     Catalog,
-    save
+    save,
+    DefaultStacIO,
+    StacIOPerm
 )
 
 
@@ -88,7 +90,9 @@ class GitStacRepository(BaseStacRepository):
             gitignore_file = os.path.join(concrete_git_repository_dir, ".gitignore")
 
             root_catalog.self_href = posixpath.join(posixpath.abspath(concrete_git_repository_dir), "catalog.json")
-            save(root_catalog)
+            save(root_catalog, io=DefaultStacIO({
+                posixpath.abspath(root_catalog.self_href): StacIOPerm.W_STAC
+            }))
 
             concrete_git_repository.add(os.path.abspath(root_catalog.self_href))
 

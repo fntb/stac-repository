@@ -15,9 +15,9 @@ from .stac_io import (
     StacIO,
     DefaultStacIO,
     DefaultReadableStacIO,
-    DefaultReadableStacIOScope,
+    StacIOPerm,
     JSONObjectError,
-    FileNotInRepositoryError
+    HrefError
 )
 
 from .utils import (
@@ -33,5 +33,5 @@ from .utils import (
     search,
     export,
     StacObjectError,
-    VersionNotFoundError
+    VersionNotFoundError,
 )

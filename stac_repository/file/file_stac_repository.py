@@ -15,7 +15,8 @@ from stac_repository.base_stac_repository import (
 from stac_repository.stac import (
     Catalog,
     save,
-    DefaultStacIO
+    DefaultStacIO,
+    StacIOPerm
 )
 
 from .file_stac_transaction import FileStacTransaction
@@ -47,7 +48,9 @@ class FileStacRepository(BaseStacRepository):
             raise RepositoryAlreadyInitializedError(f"Repository {repository_dir} is not empty")
 
         root_catalog.self_href = posixpath.join(posixpath.abspath(repository_dir), "catalog.json")
-        save(root_catalog, store=DefaultStacIO(base_href=posixpath.abspath(repository_dir)))
+        save(root_catalog, io=DefaultStacIO({
+            posixpath.abspath(root_catalog.self_href): StacIOPerm.W_STAC
+        }))
 
         return cls(repository_dir)
 

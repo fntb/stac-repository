@@ -36,22 +36,20 @@ from stac_repository import (
     __version__,
     discovered_processors,
     BaseStacRepository,
+    Backend,
+    Catalog,
     RepositoryAlreadyInitializedError,
     RepositoryNotFoundError,
     CommitNotFoundError,
-    Backend,
     BackupValueError,
     RefTypeError,
     ProcessorNotFoundError,
     ProcessingError,
-    ProcessingErrors,
+    ErrorGroup,
     StacObjectError,
-    ParentNotFoundError,
-    ParentCatalogError,
-    RootUncatalogError,
-    RootCatalogError,
-    ObjectNotFoundError,
-    Catalog,
+    HrefError,
+    CatalogError,
+    UncatalogError,
     ConfigError
 )
 
@@ -348,23 +346,23 @@ def ingest(
         ProcessorNotFoundError,
         ProcessingError,
         StacObjectError,
-        ParentNotFoundError,
-        ParentCatalogError,
-        ObjectNotFoundError,
-        RootCatalogError
+        FileNotFoundError,
+        HrefError,
+        UncatalogError,
+        CatalogError,
     ) as error:
         print_error(error, error=error, no_traceback=not debug)
         raise typer.Exit(1)
-    except ProcessingErrors as errors:
+    except ErrorGroup as errors:
         print(f"\nErrors : \n")
         print_error(errors, no_traceback=(
             ProcessorNotFoundError,
             ProcessingError,
             StacObjectError,
-            ParentNotFoundError,
-            ParentCatalogError,
-            ObjectNotFoundError,
-            RootCatalogError
+            FileNotFoundError,
+            HrefError,
+            UncatalogError,
+            CatalogError,
         ) if not debug else False)
         raise typer.Exit(1)
 
@@ -385,16 +383,14 @@ def prune(
             operation_name="Deletion"
         )
     except (
-        RootUncatalogError,
-        ParentNotFoundError
+        UncatalogError,
     ) as error:
         print_error(error, error=error, no_traceback=not debug)
         raise typer.Exit(1)
-    except ProcessingErrors as errors:
+    except ErrorGroup as errors:
         print(f"\nErrors : \n")
         print_error(errors, no_traceback=(
-            RootUncatalogError,
-            ParentNotFoundError,
+            UncatalogError,
         ) if not debug else False)
         raise typer.Exit(1)
 
