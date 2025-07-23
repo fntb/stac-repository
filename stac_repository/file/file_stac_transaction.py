@@ -9,8 +9,10 @@ from typing import (
 from contextlib import contextmanager
 
 import os
+import posixpath
 import glob
 import orjson
+from urllib.parse import urlparse as _urlparse
 
 from stac_repository.base_stac_transaction import (
     BaseStacTransaction,
@@ -27,28 +29,24 @@ if TYPE_CHECKING:
 
 class FileStacTransaction(BaseStacTransaction):
 
+    _base_path: str
+
     def __init__(self, repository: "FileStacRepository"):
-        self._base_href = repository._base_href
+        self._base_path = repository._base_path
         self._lock()
 
     def _rename_suffixed_files(self, suffix: str):
-        root_dir = os.path.abspath(self._base_href)
-
-        for file in glob.iglob(os.path.join(root_dir, "**", f"*.{suffix}"), recursive=True):
+        for file in glob.iglob(os.path.join(self._base_path, "**", f"*.{suffix}"), recursive=True):
             os.rename(file, file[:-len(f".{suffix}")])
 
     def _remove_suffixed_files(self, suffix: str):
-        root_dir = os.path.abspath(self._base_href)
-
-        for file in glob.iglob(os.path.join(root_dir, "**", f"*.{suffix}"), recursive=True):
+        for file in glob.iglob(os.path.join(self._base_path, "**", f"*.{suffix}"), recursive=True):
             os.remove(file)
 
     def _remove_empty_directories(self):
-        root_dir = os.path.abspath(self._base_href)
-
         removed = set()
 
-        for (current_dir, subdirs, files) in os.walk(root_dir, topdown=False):
+        for (current_dir, subdirs, files) in os.walk(self._base_path, topdown=False):
 
             flag = False
             for subdir in subdirs:
@@ -61,8 +59,7 @@ class FileStacTransaction(BaseStacTransaction):
                 removed.add(current_dir)
 
     def _lock(self):
-        root_dir = os.path.abspath(self._base_href)
-        lock_file = os.path.join(root_dir, ".lock")
+        lock_file = os.path.join(self._base_path, ".lock")
 
         try:
             with open(lock_file, "r"):
@@ -72,8 +69,7 @@ class FileStacTransaction(BaseStacTransaction):
                 os.utime(lock_file, None)
 
     def _unlock(self):
-        root_dir = os.path.abspath(self._base_href)
-        lock_file = os.path.join(root_dir, ".lock")
+        lock_file = os.path.join(self._base_path, ".lock")
 
         try:
             os.remove(lock_file)
@@ -92,11 +88,19 @@ class FileStacTransaction(BaseStacTransaction):
         self._remove_empty_directories()
         self._unlock()
 
-    def get(self, href: str):
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is outside of repository {self._base_href}")
+    def _href_to_file(self, href: str):
+        if not _urlparse(href, scheme="").scheme == "":
+            raise HrefError(f"{href} is not in repository directory {self._base_path}")
 
-        file = os.path.abspath(href)
+        file = os.path.normpath(posixpath.abspath(self._base_path) + href)
+
+        if not file.startswith(self._base_path):
+            raise HrefError(f"{href} is outside of repository {self._base_path}")
+
+        return file
+
+    def get(self, href: str):
+        file = self._href_to_file(href)
 
         try:
             with open(f"{file}.tmp", "r+b") as object_stream:
@@ -115,10 +119,7 @@ class FileStacTransaction(BaseStacTransaction):
 
     @contextmanager
     def get_asset(self, href: str):
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is outside of repository {self._base_href}")
-
-        file = os.path.abspath(href)
+        file = self._href_to_file(href)
 
         try:
             with open(f"{file}.tmp", "r+b") as asset_stream:
@@ -130,10 +131,7 @@ class FileStacTransaction(BaseStacTransaction):
             yield asset_stream
 
     def set(self, href: str, value: Any):
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is outside of repository {self._base_href}")
-
-        file = os.path.abspath(href)
+        file = self._href_to_file(href)
 
         os.makedirs(os.path.dirname(file), exist_ok=True)
 
@@ -144,10 +142,7 @@ class FileStacTransaction(BaseStacTransaction):
                 raise JSONObjectError from error
 
     def set_asset(self, href: str, value: BinaryIO):
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is outside of repository {self._base_href}")
-
-        file = os.path.abspath(href)
+        file = self._href_to_file(href)
 
         os.makedirs(os.path.dirname(file), exist_ok=True)
 
@@ -156,10 +151,7 @@ class FileStacTransaction(BaseStacTransaction):
                 asset_stream.write(chunk)
 
     def unset(self, href: str):
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is outside of repository {self._base_href}")
-
-        file = os.path.abspath(href)
+        file = self._href_to_file(href)
 
         try:
             os.rename(file, f"{file}.bck")

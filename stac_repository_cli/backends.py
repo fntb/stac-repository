@@ -9,7 +9,7 @@ import pkgutil
 from stac_repository.backend import Backend
 
 import stac_repository.file as file_backend
-import stac_repository.git as git_backend
+# import stac_repository.git as git_backend
 
 discovered_backends: Dict[str, Backend] = {
     **{
@@ -19,5 +19,5 @@ discovered_backends: Dict[str, Backend] = {
         if name.startswith("stac_repository_backend_")
     },
     "file": cast(Backend, file_backend),
-    "git": cast(Backend, git_backend)
+    # "git": cast(Backend, git_backend)
 }

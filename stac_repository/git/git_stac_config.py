@@ -9,7 +9,9 @@ from pydantic import (
 
 
 class GitStacConfig(BaseModel):
-    git_lfs_url: Optional[str] = Field(
+    repository: str
+
+    use_lfs: Optional[str] = Field(
         default=None,
-        description="Git LFS Backend to use"
+        description="URL of the GitLFS server, if any"
     )

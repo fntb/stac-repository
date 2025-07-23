@@ -62,10 +62,6 @@ from .stac import (
 )
 
 
-class RepositoryAlreadyInitializedError(FileExistsError):
-    pass
-
-
 class RepositoryNotFoundError(FileNotFoundError):
     pass
 
@@ -75,10 +71,6 @@ class CommitNotFoundError(ValueError):
 
 
 class RefTypeError(TypeError):
-    pass
-
-
-class ConfigError(ValueError):
     pass
 
 
@@ -121,84 +113,23 @@ class SkipIteration(Exception):
     pass
 
 
-_Self = TypeVar("_Self", bound="BaseStacRepository")
-
-
 class BaseStacRepository(metaclass=ABCMeta):
 
-    StacConfig: Optional[Type[BaseModel]] = None
+    StacConfig: Type[BaseModel]
     StacTransaction: Type[BaseStacTransaction] = BaseStacTransaction
     StacCommit: Type[BaseStacCommit] = BaseStacCommit
-
-    @classmethod
-    def validate_config(
-        cls,
-        config: Optional[Dict[str, str]] = None
-    ) -> Optional[BaseModel]:
-        if cls.StacConfig is not None and config is not None:
-            try:
-                return cls.StacConfig.model_validate(config)
-            except ValidationError as error:
-                raise ConfigError("Invalid configuration") from error
-
-    @classmethod
-    def validate_config_option(
-        cls,
-        config_key: str,
-        config_value: Optional[str] = None
-    ) -> Any:
-        if cls.StacConfig is None:
-            raise ConfigError(f"Configuration not available")
-
-        if config_key not in cls.StacConfig.model_fields.keys():
-            raise ConfigError(f"No such configuration option \"{config_key}\"")
-
-        if config_value is None:
-            return None
-
-        option_adapter = TypeAdapter(cls.StacConfig.model_fields[config_key].annotation)
-
-        try:
-            return option_adapter.validate_python(config_value)
-        except ValidationError as error:
-            raise ConfigError("Invalid \"{key}\" configuration option value") from error
-
-    @classmethod
-    @abstractmethod
-    def init(
-        cls: Type[_Self],
-        repository: str,
-        root_catalog: Catalog,
-        config: Optional[Dict[str, str]] = None
-    ) -> _Self:
-        """Create a new repository.
-
-        Raises:
-            RepositoryAlreadyInitializedError: If the repository already exists.
-        """
-        raise NotImplementedError
 
     @abstractmethod
     def __init__(
         self,
-        repository: str,
+        config: BaseModel
     ):
-        """Open an existing repository.
+        """Interfaces with the underlying repository.
 
         Raises:
             RepositoryNotFoundError: If the repository does not exist.
         """
         raise NotImplementedError
-
-    def get_config(self) -> BaseModel:
-        raise ConfigError("Configuration not available")
-
-    def set_config(
-        self,
-        config_key: str,
-        config_value: str
-    ) -> None:
-        raise ConfigError("Configuration not available")
 
     @property
     def commits(self) -> Iterator[BaseStacCommit]:

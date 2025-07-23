@@ -41,11 +41,10 @@ class GitStacCommit(BaseStacCommit):
 
     def __init__(self, repository: "GitStacRepository", commit: Optional[Commit] = None):
         self._repository = repository
-        self._base_href = repository._base_href
 
         if commit is None:
-            if repository._git_repository.head is not None:
-                self._git_commit = repository._git_repository.head
+            if repository._local_repository.head is not None:
+                self._git_commit = repository._local_repository.head
             else:
                 raise RepositoryNotFoundError("Repository doesn't have any commit")
         else:
@@ -70,23 +69,17 @@ class GitStacCommit(BaseStacCommit):
             self._git_commit.parent
         ) if self._git_commit.parent else None
 
-    def _assert_href_in_repository(self, href: str):
-        if _urlparse(href, scheme="").scheme != "":
-            raise HrefError(f"{href} is not in repository {self._base_href}")
-
-        href = posixpath.normpath(posixpath.join(self._base_href, href))
-
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is not in repository {self._base_href}")
-
-        return href
-
     def get(self, href: str) -> Any:
-        href = self._assert_href_in_repository(href)
-        os_href = os.path.abspath(href)
+        file = os.path.abspath(href)
+
+        if not _urlparse(href, scheme="").scheme == "":
+            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
+
+        if not file.startswith(self._repository._local_repository._dir):
+            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
 
         try:
-            object_str = self._git_commit.read(os_href)
+            object_str = self._git_commit.read(file)
         except GitError as error:
             if GitError.is_file_not_found_error(error):
                 raise FileNotFoundError from error
@@ -100,11 +93,16 @@ class GitStacCommit(BaseStacCommit):
 
     @contextmanager
     def get_asset(self, href: str) -> Iterator[BinaryIO]:
-        href = self._assert_href_in_repository(href)
-        os_href = os.path.abspath(href)
+        file = os.path.abspath(href)
+
+        if not _urlparse(href, scheme="").scheme == "":
+            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
+
+        if not file.startswith(self._repository._local_repository._dir):
+            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
 
         try:
-            yield self._git_commit.smudge(os_href)
+            yield self._git_commit.smudge(file)
         except GitError as error:
             if GitError.is_file_not_found_error(error):
                 raise FileNotFoundError from error
@@ -112,8 +110,12 @@ class GitStacCommit(BaseStacCommit):
                 raise error
 
     def rollback(self):
-        with self._repository._git_repository.tempclone() as concrete_git_repository:
-            concrete_git_repository.reset(self.id)
+        return NotImplementedError
+
+        with self._repository._remote_repository.tempclone() as local_repository:
+            local_repository.reset(self.id)
+
+        self._repository._local_repository.pull(fetch_lfs_files=False)
 
     def backup(self, backup_url: str):
         return NotImplementedError

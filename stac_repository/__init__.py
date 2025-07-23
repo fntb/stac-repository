@@ -15,7 +15,6 @@ from .base_stac_transaction import (
 )
 from .base_stac_repository import (
     BaseStacRepository,
-    RepositoryAlreadyInitializedError,
     RepositoryNotFoundError,
     CommitNotFoundError,
     RefTypeError,
@@ -26,7 +25,6 @@ from .base_stac_repository import (
     HrefError,
     CatalogError,
     UncatalogError,
-    ConfigError,
     BackupValueError
 )
 

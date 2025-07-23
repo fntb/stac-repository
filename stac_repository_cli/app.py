@@ -38,7 +38,6 @@ from stac_repository import (
     BaseStacRepository,
     Backend,
     Catalog,
-    RepositoryAlreadyInitializedError,
     RepositoryNotFoundError,
     CommitNotFoundError,
     BackupValueError,
@@ -50,18 +49,19 @@ from stac_repository import (
     HrefError,
     CatalogError,
     UncatalogError,
-    ConfigError
 )
 
 from stac_repository_cli.backends import discovered_backends
+
+from .config import RepositoriesConfig
 
 from .print import (
     print_reports,
     print_error,
     print_list,
-    style_indent,
     style_list_item,
-    style_commit
+    style_commit,
+    style_bold
 )
 
 install(show_locals=True)
@@ -73,6 +73,35 @@ logging.basicConfig(
 
 class BackendNotFoundError(ValueError):
     pass
+
+# def prompt_catalog() -> Catalog:
+#     id = prompt.Prompt.ask("id", default="root")
+#     title = prompt.Prompt.ask("title")
+#     description = prompt.Prompt.ask("description")
+#     license = prompt.Prompt.ask("license", default="proprietary")
+
+#     try:
+#         return Catalog.model_validate({
+#             "type": "Catalog",
+#             "id": id,
+#             "description": description,
+#             "stac_version": "1.0.0",
+#             "links": [],
+#             "title": title,
+#             "license": license,
+#         }, context="/dev/null")
+#     except ValidationError as error:
+#         print_error(f"Cannot create catalog", error=error)
+#         print(f"\n{style_indent(str(error))}")
+#         raise typer.Exit(1)
+
+
+def load_config(debug: bool = False) -> RepositoriesConfig:
+    try:
+        return RepositoriesConfig.load()
+    except Exception as error:
+        print_error(error, no_traceback=not debug)
+        raise typer.Exit(1)
 
 
 def get_backend(
@@ -86,45 +115,27 @@ def get_backend(
     return discovered_backends[backend_id]
 
 
-def init_repository(
-    backend_id: str,
-    repository: Optional[str],
-    root_catalog: Catalog,
-    debug: bool = False
-) -> BaseStacRepository:
-    if repository is None:
-        print_error(f"Missing --repository option.")
-        raise typer.Exit(1)
-
-    backend = get_backend(backend_id, debug=debug)
-
-    try:
-        return backend.StacRepository.init(
-            repository,
-            root_catalog
-        )
-    except RepositoryAlreadyInitializedError as error:
-        print_error(f"Repository {repository} already initialized.", error=error, no_traceback=not debug)
-        raise typer.Exit(1)
-
-
 def load_repository(
-    backend_id: str,
-    repository: Optional[str],
+    config: RepositoriesConfig,
     debug: bool = False
 ) -> BaseStacRepository:
-    if repository is None:
-        print_error(f"Missing --repository option.")
+
+    if config.active is None:
+        if not config.keys():
+            print_error(f"No repository found in .stac-repository.toml")
+        else:
+            print_error(f"No repository activated. See stac-repository activate --help.")
+
         raise typer.Exit(1)
 
-    backend = get_backend(backend_id, debug=debug)
+    backend = config.active.get_backend()
 
     try:
         return backend.StacRepository(
-            repository
+            config.active.get_backend_config()
         )
     except RepositoryNotFoundError as error:
-        print_error(f"Repository {repository} not found.", error=error, no_traceback=not debug)
+        print_error(f"Repository not found.", error=error, no_traceback=not debug)
         raise typer.Exit(1)
 
 
@@ -132,26 +143,11 @@ app = typer.Typer(no_args_is_help=True)
 
 
 @app.callback()
-def callback(
-    context: typer.Context,
-    repository: Annotated[
-        Optional[str],
-        typer.Option(help="Repository URI - interpreted by the chosen backend.")
-    ] = None,
-    backend: Annotated[
-        str,
-        typer.Option(help="Backend."),
-    ] = "file",
-):
+def callback():
     """🌍🛰️\tSTAC Repository
 
     The interface to manage STAC catalogs.
     """
-
-    context.obj = SimpleNamespace(
-        repository=repository,
-        backend=backend
-    )
 
 
 @app.command()
@@ -162,7 +158,45 @@ def version():
 
 
 @app.command()
-def show_backends():
+def show_repositories(
+    debug: bool = False
+):
+    """Shows configured repositories.
+    """
+
+    config = load_config(debug=debug)
+
+    print_list([
+        f"{style_bold(repository_id)} (active)" if repository_config.active else repository_id
+        for (repository_id, repository_config) in config.items()
+    ])
+
+
+@app.command()
+def activate(
+    repository: Annotated[
+        Optional[str],
+        typer.Argument(
+            help="The repository to switch to."
+        )
+    ] = None,
+    debug: bool = False
+):
+    """Switch the activated repository from those listed in .stac-repository.toml
+    """
+
+    config = load_config(debug=debug)
+
+    try:
+        config.active = repository
+        config.save()
+    except Exception as error:
+        print_error(error, no_traceback=not debug)
+        raise typer.Exit(1)
+
+
+@app.command()
+def show_backends(debug: bool = False):
     """Shows installed stac-repository backends.
     """
 
@@ -173,7 +207,7 @@ def show_backends():
 
 
 @app.command()
-def show_processors():
+def show_processors(debug: bool = False):
     """Shows installed stac-repository processors.
     """
 
@@ -184,103 +218,7 @@ def show_processors():
 
 
 @app.command()
-def init(
-    context: typer.Context,
-    root_catalog: Annotated[
-        Optional[str],
-        typer.Option(
-            help="Existing root catalog to initialize the repository from. Leave out to use the interactive initializer.")
-    ] = None,
-    debug: bool = False
-):
-    """Initializes the repository.
-    """
-    def read_root_catalog(root_catalog_file: str) -> Catalog:
-        root_catalog_file = os.path.abspath(root_catalog_file)
-
-        try:
-            with open(root_catalog_file, "r") as catalog_stream:
-                return Catalog.model_validate_json(catalog_stream.read(), context=root_catalog_file)
-        except ValidationError as error:
-            print_error(f"Cannot instanciate catalog", error=error)
-            print(f"\n{style_indent(str(error))}")
-            raise typer.Exit(1)
-        except Exception as error:
-            print_error(f"Cannot instanciate catalog {root_catalog_file}", error=error, no_traceback=not debug)
-            raise typer.Exit(1)
-
-    def prompt_root_catalog() -> Catalog:
-        id = prompt.Prompt.ask("id", default="root")
-        title = prompt.Prompt.ask("title")
-        description = prompt.Prompt.ask("description")
-        license = prompt.Prompt.ask("license", default="proprietary")
-
-        try:
-            return Catalog.model_validate({
-                "type": "Catalog",
-                "id": id,
-                "description": description,
-                "stac_version": "1.0.0",
-                "links": [],
-                "title": title,
-                "license": license,
-            }, context="/dev/null")
-        except ValidationError as error:
-            print_error(f"Cannot create catalog", error=error)
-            print(f"\n{style_indent(str(error))}")
-            raise typer.Exit(1)
-
-    if root_catalog is None:
-        root_catalog = prompt.Prompt.ask(
-            "Initialize from an existing root catalog file ?",
-            default="Leave blank to use the interactive initializer"
-        )
-
-        if root_catalog == "Leave blank to use the interactive initializer":
-            _root_catalog = prompt_root_catalog()
-        else:
-            _root_catalog = read_root_catalog(root_catalog)
-    else:
-        _root_catalog = read_root_catalog(root_catalog)
-
-    print(_root_catalog.model_dump())
-
-    if not prompt.Confirm.ask("Use as root catalog ?", default=False):
-        return
-
-    init_repository(
-        backend_id=context.obj.backend,
-        repository=context.obj.repository,
-        root_catalog=_root_catalog,
-        debug=debug
-    )
-
-
-@app.command()
-def config(
-    context: typer.Context,
-    set: Annotated[
-        Optional[Tuple[str, str]],
-        typer.Option(
-            help="Configuration option.")
-    ] = None,
-    debug: bool = False
-):
-    """Get or set the repository configuration options - interpreted by the chosen backend."""
-    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
-    try:
-        if set is None:
-            print(stac_repository.get_config().model_dump())
-        else:
-            stac_repository.set_config(set[0], set[1])
-    except ConfigError as error:
-        print_error(error, error=error, no_traceback=not debug)
-        raise typer.Exit(1)
-
-
-@app.command()
 def ingest(
-    context: typer.Context,
     sources: Annotated[
         List[str],
         typer.Argument(help="Sources to ingest.")
@@ -325,7 +263,12 @@ def ingest(
     If a --processor is specified it will be used to discover and process the products.
     If left unspecified sources must be paths to stac objects (catalog, collection or item).
     """
-    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
+    config = load_config(debug=debug)
+    stac_repository = load_repository(config=config, debug=debug)
+
+    if parent is None:
+        if not prompt.Confirm.ask("No --parent specified, overwrite catalog root ?", default=False):
+            return
 
     try:
         print_reports(
@@ -369,13 +312,13 @@ def ingest(
 
 @app.command()
 def prune(
-    context: typer.Context,
     product_ids: List[str],
     debug: bool = False
 ):
     """Removes some products from the catalog.
     """
-    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
+    config = load_config(debug=debug)
+    stac_repository = load_repository(config=config, debug=debug)
 
     try:
         print_reports(
@@ -397,13 +340,13 @@ def prune(
 
 @app.command()
 def history(
-    context: typer.Context,
     verbose: bool = False,
     debug: bool = False,
 ):
     """Logs the catalog history.
     """
-    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
+    config = load_config(debug=debug)
+    stac_repository = load_repository(config=config, debug=debug)
 
     for commit in stac_repository.commits:
         print(style_list_item(style_commit(commit, include_message=verbose)))
@@ -411,7 +354,6 @@ def history(
 
 @app.command()
 def rollback(
-    context: typer.Context,
     ref: Annotated[
         str,
         typer.Argument(
@@ -428,7 +370,9 @@ def rollback(
     """Rollbacks the catalog to a previous commit. Support depends on the chosen backend.
     """
 
-    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
+    config = load_config(debug=debug)
+    stac_repository = load_repository(config=config, debug=debug)
+
     try:
         commit = stac_repository.get_commit(ref)
     except CommitNotFoundError as error:
@@ -439,13 +383,12 @@ def rollback(
         raise typer.Exit(1)
 
     if commit.rollback() == NotImplemented:
-        print_error(f"Backend {context.obj.backend} does not support rollbacks.")
+        print_error(f"Backend does not support rollbacks.")
         raise typer.Exit(1)
 
 
 @app.command()
 def export(
-    context: typer.Context,
     dir: Annotated[
         str,
         typer.Argument(help="Export directory.")
@@ -459,7 +402,8 @@ def export(
     """Exports the catalog. If a commit ref is specified, exports the catalog as it was at that point in time.
     """
 
-    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
+    config = load_config(debug=debug)
+    stac_repository = load_repository(config=config, debug=debug)
 
     if ref is not None:
         try:
@@ -482,7 +426,6 @@ def export(
 
 @app.command()
 def backup(
-    context: typer.Context,
     backup: Annotated[
         str,
         typer.Argument(help="Backup URI. Interpreted by the chosen backend.")
@@ -498,7 +441,8 @@ def backup(
     Support depends on the chosen backend.
     """
 
-    stac_repository = load_repository(context.obj.backend, context.obj.repository, debug=debug)
+    config = load_config(debug=debug)
+    stac_repository = load_repository(config=config, debug=debug)
 
     if ref is not None:
         try:
@@ -514,7 +458,7 @@ def backup(
 
     try:
         if commit.backup(backup) == NotImplemented:
-            print_error(f"Backend {context.obj.backend} does not support backups.")
+            print_error(f"Backend does not support backups.")
             raise typer.Exit(1)
     except BackupValueError as error:
         print_error(f"Bad --backup option : {str(error)}.", error=error, no_traceback=not debug)

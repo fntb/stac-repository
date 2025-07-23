@@ -33,22 +33,9 @@ class BackupValueError(ValueError):
 
 class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
 
-    _base_href: str
-    """The base href of this repository.
-    
-    This value is used as the repository scope, stac objects and assets href falling outside of this scope will not be writeable
-    and will need to be read from an external source.
-    
-    **This value must be a base uri or absolute posix path.**
-    """
-
     @abstractmethod
     def __init__(self, repository: "BaseStacRepository"):
         raise NotImplementedError
-
-    @property
-    def _catalog_href(self):
-        return posixpath.join(self._base_href, "catalog.json")
 
     @property
     @abstractmethod
@@ -102,7 +89,7 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
         This method will **not** lookup objects outside of the repository.
         """
         return search(
-            self._catalog_href,
+            "/catalog.json",
             id=id,
             io=self,
         )

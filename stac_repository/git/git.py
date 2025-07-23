@@ -349,6 +349,42 @@ class BaseRepository():
         return self.get_commit("HEAD")
 
 
+class RemoteRepository():
+
+    _url: str
+
+    def __init__(self, url: str) -> None:
+        self._url = url
+
+    @property
+    def is_init(self) -> bool:
+        result = subprocess.run(
+            [
+                "git",
+                "ls-remote",
+                self._url
+            ]
+        )
+
+        return result.returncode == 0
+
+    @contextlib.contextmanager
+    def tempclone(self):
+        with tempfile.TemporaryDirectory() as dir:
+            repository = Repository(dir)
+            repository.clone(self._url, fetch_lfs_files=False)
+
+            yield repository
+
+            repository.push()
+
+    def clone(self, dir: Optional[str] = tempfile.mkdtemp()):
+        repository = Repository(dir)
+        repository.clone(self.dir, fetch_lfs_files=False)
+
+        return repository
+
+
 class BareRepository(BaseRepository):
 
     @property

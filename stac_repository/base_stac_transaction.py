@@ -58,22 +58,9 @@ class UncatalogError(ValueError):
 
 class BaseStacTransaction(StacIO, metaclass=ABCMeta):
 
-    _base_href: str
-    """The base href of this repository.
-    
-    This value is used as the repository scope, stac objects and assets href falling outside of this scope will not be writeable
-    and will need to be read from an external source.
-    
-    **This value must be a base uri or absolute posix path.**
-    """
-
     @abstractmethod
     def __init__(self, repository: "BaseStacRepository"):
         raise NotImplementedError
-
-    @property
-    def _catalog_href(self):
-        return posixpath.join(self._base_href, "catalog.json")
 
     @contextlib.contextmanager
     def context(self, *, message: Optional[str] = None, **other_commit_args):
@@ -106,15 +93,13 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         catalog_assets_out_of_scope: bool = False,
         catalog_out_of_scope: bool = False
     ):
-        """Catalogs a product.
+        """Catalogs a product. If parent_id is unspecified then the product is cataloged as the new root.
 
         Raises:
             FileNotFoundError: Product source does not exist
             StacObjectError: Product source is not a valid STAC object
             HrefError:  Product source href (scheme) cannot be processed
             UncatalogError:
-                - Old product version couldn't be deleted sucessfully
-                - Cannot uncatalog the root
             CatalogError:
         """
 
@@ -159,22 +144,31 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
 
         unset_parent(product)
 
-        try:
-            self.uncatalog(product.id)
-        except FileNotFoundError:
-            pass
-
         if parent_id is None:
+            if not isinstance(product, Catalog):
+                raise CatalogError(f"Cannot catalog a {type(product).__class__} as root, only Catalog is permitted.")
+
+            delete("/catalog.json", io=self)
+
+            product.self_href = "/catalog.json"
+
             try:
-                parent = load(
-                    self._catalog_href,
-                    io=self,
+                save(
+                    product,
+                    io=self
                 )
-            except (FileNotFoundError, HrefError, StacObjectError) as error:
-                raise CatalogError(f"Couldn't load catalog root : {str(error)}") from error
+            except HrefError as error:
+                raise CatalogError(
+                    f"{product.id} ({product_file}) couldn't be saved successfully : {str(error)}"
+                ) from error
         else:
+            try:
+                self.uncatalog(product.id)
+            except FileNotFoundError:
+                pass
+
             parent = search(
-                self._catalog_href,
+                "/catalog.json",
                 id=parent_id,
                 io=self,
             )
@@ -182,79 +176,10 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
             if parent is None:
                 raise CatalogError(f"Parent {parent_id} not found in catalog")
 
-        if isinstance(parent, Item):
-            raise CatalogError(f"Cannot catalog under {parent_id}, this is an Item")
+            if isinstance(parent, Item):
+                raise CatalogError(f"Cannot catalog under {parent_id}, this is an Item")
 
-        set_parent(product, parent)
-
-        last_ancestor: Union[Item, Collection, Catalog] = parent
-        while True:
-            if isinstance(last_ancestor, Collection):
-                try:
-                    last_ancestor.extent = compute_extent(last_ancestor, io=self)
-                except StacObjectError as error:
-                    logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
-                    break
-
-            try:
-                ancestor = load_parent(
-                    last_ancestor,
-                    io=self,
-                )
-            except (HrefError) as error:
-                logger.exception(f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
-                break
-
-            if ancestor is None:
-                break
-            else:
-                last_ancestor = ancestor
-
-        try:
-            save(
-                last_ancestor,
-                io=self
-            )
-        except HrefError as error:
-            raise CatalogError(
-                f"{product.id} ({product_file}) couldn't be saved successfully : {str(error)}"
-            ) from error
-
-    def uncatalog(
-        self,
-        product_id: str,
-    ):
-        """Uncatalogs a product.
-
-        Raises:
-            FileNotFoundError: Product couldn't be found in catalog
-            UncatalogError: 
-                - Product couldn't be deleted (completely)
-                - Cannot uncatalog the root
-        """
-
-        product = search(
-            self._catalog_href,
-            product_id,
-            io=self,
-        )
-
-        if product is None:
-            raise FileNotFoundError(f"Product {product_id} not found in catalog")
-
-        try:
-            parent = load_parent(product, io=self)
-        except (HrefError) as error:
-            logger.exception(
-                f"[{type(error).__name__}] Skip recomputing parent child links as parent cannot be found inside the repository : {str(error)}")
-
-            delete(product, io=self)
-        else:
-            if parent is None:
-                raise UncatalogError(f"Cannot uncatalog the root")
-
-            unset_parent(product)
-            delete(product, io=self)
+            set_parent(product, parent)
 
             last_ancestor: Union[Item, Collection, Catalog] = parent
             while True:
@@ -286,4 +211,102 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
                     io=self
                 )
             except HrefError as error:
-                raise UncatalogError(f"{product_id} couldn't be deleted sucessfully : {str(error)}") from error
+                raise CatalogError(
+                    f"{product.id} ({product_file}) couldn't be saved successfully : {str(error)}"
+                ) from error
+
+    def uncatalog(
+        self,
+        product_id: str,
+    ):
+        """Uncatalogs a product.
+
+        Raises:
+            FileNotFoundError: Product couldn't be found in catalog
+            UncatalogError: Product couldn't be deleted (in full, partial deletion may have occured)
+        """
+
+        product = search(
+            "/catalog.json",
+            product_id,
+            io=self,
+        )
+
+        if product is None:
+            raise FileNotFoundError(f"Product {product_id} not found in catalog")
+
+        try:
+            parent = load_parent(product, io=self)
+        except (HrefError) as error:
+            logger.exception(
+                f"[{type(error).__name__}] Skip recomputing parent child links as parent cannot be found inside the repository : {str(error)}")
+
+            delete(product, io=self)
+        else:
+
+            if parent is None:
+                delete(product, io=self)
+            else:
+                unset_parent(product)
+                delete(product, io=self)
+
+                last_ancestor: Union[Item, Collection, Catalog] = parent
+                while True:
+                    if isinstance(last_ancestor, Collection):
+                        try:
+                            last_ancestor.extent = compute_extent(last_ancestor, io=self)
+                        except StacObjectError as error:
+                            logger.exception(
+                                f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                            break
+
+                    try:
+                        ancestor = load_parent(
+                            last_ancestor,
+                            io=self,
+                        )
+                    except (HrefError) as error:
+                        logger.exception(
+                            f"[{type(error).__name__}] Skipped recomputing ancestor extents : {str(error)}")
+                        break
+
+                    if ancestor is None:
+                        break
+                    else:
+                        last_ancestor = ancestor
+
+                try:
+                    save(
+                        last_ancestor,
+                        io=self
+                    )
+                except HrefError as error:
+                    raise UncatalogError(f"{product_id} couldn't be deleted sucessfully : {str(error)}") from error
+
+    # def edit(
+    #     self,
+    #     product_id: str,
+    #     edited: Union[Item, Collection, Catalog]
+    # ):
+    #     """Edits a product without mutating the catalog structure.
+
+    #     To preserve the catalog integrity, some properties cannot be edited via this method :
+
+    #     - type
+    #     - id
+    #     - assets
+    #         Only assets with hrefs external to the repository can be modified
+    #     - links
+    #         Only links without the rel "self", "alternate", "root", "collection", "parent", "child" or "item"
+    #         and with hrefs external to the repository can be modified
+    #     - collection
+    #     - geometry
+    #     - bbox
+    #     - extent
+    #     - summaries
+
+    #     Raises:
+    #         NotImplementedError
+    #     """
+
+    #     raise NotImplementedError

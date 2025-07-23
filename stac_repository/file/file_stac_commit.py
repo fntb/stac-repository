@@ -8,6 +8,7 @@ from typing import (
 from contextlib import contextmanager
 
 import os
+import posixpath
 import datetime
 import shutil
 from urllib.parse import urlparse as _urlparse
@@ -30,14 +31,24 @@ if TYPE_CHECKING:
 
 class FileStacCommit(BaseStacCommit):
 
+    _base_path: str
+
     def __init__(self, repository: "FileStacRepository"):
-        self._base_href = repository._base_href
+        self._base_path = repository._base_path
+
+    def _href_to_file(self, href: str):
+        if not _urlparse(href, scheme="").scheme == "":
+            raise HrefError(f"{href} is not in repository directory {self._base_path}")
+
+        file = os.path.normpath(posixpath.abspath(self._base_path) + href)
+
+        if not file.startswith(self._base_path):
+            raise HrefError(f"{href} is outside of repository {self._base_path}")
+
+        return file
 
     def get(self, href: str):
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is outside of repository {self._base_href}")
-
-        file = os.path.abspath(href)
+        file = self._href_to_file(href)
 
         try:
             with open(f"{file}.bck", "r+b") as object_stream:
@@ -56,10 +67,7 @@ class FileStacCommit(BaseStacCommit):
 
     @contextmanager
     def get_asset(self, href: str):
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is outside of repository {self._base_href}")
-
-        file = os.path.abspath(href)
+        file = self._href_to_file(href)
 
         try:
             with open(f"{file}.bck", "r+b") as asset_stream:
@@ -72,11 +80,11 @@ class FileStacCommit(BaseStacCommit):
 
     @property
     def id(self) -> str:
-        return self._base_href
+        return self._base_path
 
     @property
     def datetime(self) -> datetime.datetime:
-        return datetime.datetime.fromtimestamp(os.stat(os.path.abspath(self._base_href)).st_mtime)
+        return datetime.datetime.fromtimestamp(os.stat(self._base_path).st_mtime)
 
     @property
     def message(self):
@@ -94,4 +102,4 @@ class FileStacCommit(BaseStacCommit):
             raise BackupValueError("Non-filesystem backups are not supported")
 
         # Replace with rsync
-        shutil.copytree(os.path.dirname(self._catalog_href), backup_url, dirs_exist_ok=True)
+        shutil.copytree(self._base_path, backup_url, dirs_exist_ok=True)

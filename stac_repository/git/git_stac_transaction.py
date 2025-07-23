@@ -38,13 +38,12 @@ if TYPE_CHECKING:
 class GitStacTransaction(BaseStacTransaction):
 
     _repository: "GitStacRepository"
-    _git_repository: Repository
+    _local_repository: Repository
 
     def __init__(self, repository: "GitStacRepository"):
         self._repository = repository
 
-        self._git_repository = repository._git_repository.clone()
-        self._base_href = repository._base_href
+        self._git_repository = repository._remote_repository.clone()
 
     def _make_concrete_href(self, href: str):
         if _urlparse(href, scheme="").scheme != "":

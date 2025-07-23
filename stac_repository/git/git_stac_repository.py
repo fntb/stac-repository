@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from typing import (
-    Optional,
-    Dict,
-    cast
-)
-
+import hashlib
+import tempfile
 import os
-import posixpath
 
 from ..__about__ import __version__, __name_public__
 
 from .git import (
     Repository,
     BareRepository,
+    RemoteRepository,
     RefNotFoundError
 )
 from .git_stac_commit import (
@@ -27,15 +23,7 @@ from .git_stac_config import (
 )
 from ..base_stac_repository import (
     BaseStacRepository,
-    RepositoryAlreadyInitializedError,
     RepositoryNotFoundError,
-    ConfigError
-)
-from ..stac import (
-    Catalog,
-    save,
-    DefaultStacIO,
-    StacIOPerm
 )
 
 
@@ -57,89 +45,64 @@ class GitStacRepository(BaseStacRepository):
     StacCommit = GitStacCommit
     StacTransaction = GitStacTransaction
 
-    _git_repository: BareRepository
-    _lfs_config_file: str
-    _base_href: str
+    _local_repository: Repository
+    _remote_repository: RemoteRepository
 
-    @classmethod
-    def init(
-        cls,
-        repository: str,
-        root_catalog: Catalog,
-        config: Optional[Dict[str, str]] = None
-    ) -> GitStacRepository:
-        validated_config = cast(GitStacConfig, cls.validate_config(config))
+    # @classmethod
+    # def init(
+    #     cls,
+    #     root_catalog: Catalog,
+    #     config: GitStacConfig
+    # ) -> GitStacRepository:
+    #     repository_dir = os.path.abspath(config.git_repository)
+    #     git_repository = BareRepository(repository_dir)
 
-        repository_dir = os.path.abspath(repository)
-        git_repository = BareRepository(repository_dir)
+    #     if not os.path.isdir(repository_dir):
+    #         os.makedirs(repository_dir, exist_ok=True)
 
-        if not os.path.isdir(repository_dir):
-            os.makedirs(repository_dir, exist_ok=True)
+    #     if os.listdir(repository_dir):
+    #         raise RepositoryAlreadyInitializedError(f"{repository_dir} is not empty")
 
-        if os.listdir(repository_dir):
-            raise RepositoryAlreadyInitializedError(f"{repository_dir} is not empty")
+    #     if git_repository.is_init:
+    #         raise RepositoryAlreadyInitializedError(f"{repository_dir} is already a git repository")
 
-        if git_repository.is_init:
-            raise RepositoryAlreadyInitializedError(f"{repository_dir} is already a git repository")
+    #     git_repository.init()
 
-        git_repository.init()
+    #     with git_repository.tempclone() as concrete_git_repository:
+    #         concrete_git_repository_dir = concrete_git_repository.dir
 
-        with git_repository.tempclone() as concrete_git_repository:
-            concrete_git_repository_dir = concrete_git_repository.dir
+    #         gitignore_file = os.path.join(concrete_git_repository_dir, ".gitignore")
 
-            gitignore_file = os.path.join(concrete_git_repository_dir, ".gitignore")
+    #         root_catalog.self_href = posixpath.join(posixpath.abspath(concrete_git_repository_dir), "catalog.json")
+    #         save(root_catalog, io=DefaultStacIO({
+    #             posixpath.abspath(root_catalog.self_href): StacIOPerm.W_STAC
+    #         }))
 
-            root_catalog.self_href = posixpath.join(posixpath.abspath(concrete_git_repository_dir), "catalog.json")
-            save(root_catalog, io=DefaultStacIO({
-                posixpath.abspath(root_catalog.self_href): StacIOPerm.W_STAC
-            }))
+    #         concrete_git_repository.add(os.path.abspath(root_catalog.self_href))
 
-            concrete_git_repository.add(os.path.abspath(root_catalog.self_href))
+    #         if config.git_lfs_url is not None:
+    #             concrete_git_repository.lfs_url = config.git_lfs_url
+    #             concrete_git_repository.stage_lfs()
 
-            if validated_config is not None and validated_config.git_lfs_url is not None:
-                concrete_git_repository.lfs_url = validated_config.git_lfs_url
-                concrete_git_repository.stage_lfs()
+    #         open(gitignore_file, "w").close()
+    #         concrete_git_repository.add(gitignore_file)
 
-            open(gitignore_file, "w").close()
-            concrete_git_repository.add(gitignore_file)
+    #         concrete_git_repository.commit("Initialize repository")
 
-            concrete_git_repository.commit("Initialize repository")
-
-        return cls(repository_dir)
+    #     return cls(repository_dir)
 
     def __init__(
         self,
-        repository: str,
+        config: GitStacConfig
     ):
-        self._base_href = posixpath.abspath(repository)
-        repository_dir = os.path.abspath(self._base_href)
+        self._remote_repository = RemoteRepository(config.repository)
 
-        if not os.path.isdir(repository_dir):
-            raise RepositoryNotFoundError
+        if not self._remote_repository.is_init:
+            raise RepositoryNotFoundError(f"{config.repository} is not a git repository")
 
-        self._git_repository = BareRepository(repository_dir)
+        local_clone_path = os.path.abspath(
+            tempfile.tempdir,
+            hashlib.sha256(config.repository.encode("utf-8")).hexdigest()
+        )
 
-        if not self._git_repository.is_init:
-            raise RepositoryNotFoundError(f"{repository_dir} is not a git repository")
-
-    def set_config(
-        self,
-        config_key: str,
-        config_value: str
-    ):
-        validated_config_value = self.validate_config_option(config_key, config_value)
-
-        with self._git_repository.tempclone() as concrete_git_repository:
-            if config_key == "git_lfs_url":
-                concrete_git_repository.lfs_url = validated_config_value
-                concrete_git_repository.stage_lfs()
-            else:
-                raise NotImplementedError
-
-            concrete_git_repository.commit(f"Change configuration option \"{config_key}\"")
-
-    def get_config(self):
-        with self._git_repository.tempclone() as concrete_git_repository:
-            return GitStacConfig(
-                git_lfs_url=concrete_git_repository.lfs_url
-            )
+        self._local_repository = self._remote_repository.clone(local_clone_path)

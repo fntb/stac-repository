@@ -321,14 +321,17 @@ def search(
 ) -> Optional[Union[Item, Collection, Catalog]]:
     """Walks the catalog - without loading it all into memory at once - to find a STAC object with some id."""
 
-    try:
-        stac_object = load(
-            root_href if isinstance(root_href, str) else root_href.self_href,
-            io=io,
-        )
-    except (FileNotFoundError, StacObjectError, HrefError) as error:
-        logger.exception(f"[{type(error).__name__}] Ignored object {root_href} : {str(error)}")
-        return None
+    if isinstance(root_href, str):
+        try:
+            stac_object = load(
+                root_href,
+                io=io,
+            )
+        except (FileNotFoundError, StacObjectError, HrefError) as error:
+            logger.exception(f"[{type(error).__name__}] Ignored object {root_href} : {str(error)}")
+            return None
+    else:
+        stac_object = root_href
 
     if stac_object.id == id:
         return stac_object

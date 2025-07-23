@@ -44,6 +44,7 @@ dependencies = [
     "typer ~= 0.15.1",
     "typing-extensions>=4.13.2",
     "requests>=2.32.4",
+    "tomlkit>=0.13.3",
 ]
 
 [dependency-groups]
