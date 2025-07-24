@@ -422,17 +422,11 @@ def save(
     stac_object.links = saved_links
 
     if isinstance(stac_object, (Item, Collection)) and stac_object.assets is not None:
-        for asset in stac_object.assets.values():
-            if asset.target is not None:
-                asset.href = posixpath.join(".", posixpath.basename(urlpath(asset.href)))
-            else:
-                asset.href = urlrel(asset.href, stac_object.self_href)
-
         saved_assets: Dict[str, Asset] = {}
 
         for (key, asset) in stac_object.assets.items():
             if asset.target is not None:
-                saved_asset_href = posixpath.join(".", posixpath.basename(urlpath(asset.href)))
+                saved_asset_href = posixpath.join(".", "assets", posixpath.basename(urlpath(asset.href)))
 
                 try:
                     with asset.target() as asset_stream:

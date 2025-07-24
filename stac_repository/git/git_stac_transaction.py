@@ -10,6 +10,7 @@ from typing import (
 )
 
 import os
+import io
 import shutil
 from urllib.parse import urlparse as _urlparse
 import posixpath
@@ -17,10 +18,8 @@ from contextlib import contextmanager
 
 import orjson
 
-from .git import (
-    Repository,
-    BareRepository,
-    GitError
+from .git2 import (
+    LocalRepository
 )
 
 from ..base_stac_commit import (
@@ -38,36 +37,28 @@ if TYPE_CHECKING:
 class GitStacTransaction(BaseStacTransaction):
 
     _repository: "GitStacRepository"
-    _local_repository: Repository
+    _git_repository: LocalRepository
 
     def __init__(self, repository: "GitStacRepository"):
         self._repository = repository
 
-        self._git_repository = repository._remote_repository.clone()
+        self._git_repository = repository._local_repository
 
-    def _make_concrete_href(self, href: str):
-        if _urlparse(href, scheme="").scheme != "":
-            raise HrefError(f"{href} is not in repository {self._base_href}")
+    def _href_to_file(self, href: str):
+        if not _urlparse(href, scheme="").scheme == "":
+            raise HrefError(f"{href} is an external ressource")
 
-        href = posixpath.normpath(posixpath.join(self._base_href, href))
+        file = os.path.normpath(posixpath.abspath(self._git_repository._repository_dir) + href)
 
-        if not href.startswith(self._base_href):
-            raise HrefError(f"{href} is not in repository {self._base_href}")
+        if not file.startswith(self._git_repository._repository_dir):
+            raise HrefError(f"{href} is outside of repository {self._git_repository._repository_dir}")
 
-        relhref = posixpath.relpath(href, self._base_href)
-
-        return os.path.normpath(os.path.join(self._git_repository.dir, relhref))
+        return file
 
     def get(self, href: str) -> Any:
-        concrete_href = self._make_concrete_href(href)
+        file = self._href_to_file(href)
 
-        try:
-            object_str = self._git_repository.read(concrete_href)
-        except GitError as error:
-            if GitError.is_file_not_found_error(error):
-                raise FileNotFoundError from error
-            else:
-                raise error
+        object_str = self._git_repository.read(file)
 
         try:
             return orjson.loads(object_str)
@@ -76,58 +67,53 @@ class GitStacTransaction(BaseStacTransaction):
 
     @contextmanager
     def get_asset(self, href: str) -> Iterator[BinaryIO]:
-        concrete_href = self._make_concrete_href(href)
+        file = self._href_to_file(href)
 
-        try:
-            yield self._git_repository.smudge(concrete_href)
-        except GitError as error:
-            if GitError.is_file_not_found_error(error):
-                raise FileNotFoundError from error
-            else:
-                raise error
+        if self._repository._local_repository.is_lfs_installed:
+            pointer = self._git_repository.read(file)
+            yield io.BytesIO(self._git_repository.lfs_smudge(pointer))
+        else:
+            yield io.BytesIO(self._git_repository.read(file, text=False))
 
     def set(self, href: str, value: Any):
-        concrete_href = self._make_concrete_href(href)
+        file = self._href_to_file(href)
 
-        os.makedirs(os.path.dirname(concrete_href), exist_ok=True)
+        os.makedirs(os.path.dirname(file), exist_ok=True)
 
-        with open(concrete_href, "w+b") as object_stream:
+        with open(file, "w+b") as object_stream:
             try:
                 object_stream.write(orjson.dumps(value))
             except orjson.JSONEncodeError as error:
                 raise JSONObjectError from error
 
-        self._git_repository.add(concrete_href)
+        self._git_repository.add(file)
 
     def set_asset(self, href: str, value: BinaryIO):
-        concrete_href = self._make_concrete_href(href)
+        file = self._href_to_file(href)
 
-        if posixpath.splitext(_urlparse(href).path)[1] != ".json":
-            self._git_repository.lfs_track(concrete_href)
-            self._git_repository.stage_lfs()
+        if self._git_repository.is_lfs_installed:
+            file_name = os.path.relpath(file, self._git_repository._repository_dir)
+            self._git_repository.lfs_track(file_name)
 
-        os.makedirs(os.path.dirname(concrete_href), exist_ok=True)
+        os.makedirs(os.path.dirname(file), exist_ok=True)
 
-        with open(concrete_href, "w+b") as asset_stream:
+        with open(file, "w+b") as asset_stream:
             while (chunk := value.read()):
                 asset_stream.write(chunk)
 
-        self._git_repository.add(concrete_href)
+        self._git_repository.add(file)
 
     def unset(self, href: str):
-        concrete_href = self._make_concrete_href(href)
+        file = self._href_to_file(href)
 
         try:
-            os.remove(concrete_href)
+            os.remove(file)
+            self._git_repository.remove(file)
         except FileNotFoundError:
             pass
 
-        self._git_repository.remove(concrete_href)
-
     def abort(self):
         self._git_repository.reset(clean_modified_files=True)
-
-        shutil.rmtree(self._git_repository.dir, ignore_errors=True)
 
     def commit(self, *, message: Optional[str] = None):
         if self._git_repository.modified_files:

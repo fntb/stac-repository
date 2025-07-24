@@ -12,14 +12,20 @@ import datetime
 import posixpath
 from urllib.parse import urlparse as _urlparse
 import os
+import io
 import orjson
 from contextlib import contextmanager
 
-from .git import (
-    Commit,
-    Repository,
-    GitError
+# from .git import (
+#     Commit,
+#     Repository,
+#     GitError
+# )
+
+from .git2 import (
+    Commit
 )
+
 from ..base_stac_commit import (
     BaseStacCommit,
     JSONObjectError,
@@ -52,7 +58,7 @@ class GitStacCommit(BaseStacCommit):
 
     @property
     def id(self) -> str:
-        return self._git_commit.id
+        return self._git_commit.ref
 
     @property
     def datetime(self) -> datetime.datetime:
@@ -69,22 +75,21 @@ class GitStacCommit(BaseStacCommit):
             self._git_commit.parent
         ) if self._git_commit.parent else None
 
-    def get(self, href: str) -> Any:
-        file = os.path.abspath(href)
-
+    def _href_to_file(self, href: str):
         if not _urlparse(href, scheme="").scheme == "":
-            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
+            raise HrefError(f"{href} is an external ressource")
 
-        if not file.startswith(self._repository._local_repository._dir):
-            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
+        file = os.path.normpath(posixpath.abspath(self._repository._local_repository._repository_dir) + href)
 
-        try:
-            object_str = self._git_commit.read(file)
-        except GitError as error:
-            if GitError.is_file_not_found_error(error):
-                raise FileNotFoundError from error
-            else:
-                raise error
+        if not file.startswith(self._repository._local_repository._repository_dir):
+            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._repository_dir}")
+
+        return file
+
+    def get(self, href: str) -> Any:
+        file = self._href_to_file(href)
+
+        object_str = self._git_commit.read(file)
 
         try:
             return orjson.loads(object_str)
@@ -93,21 +98,13 @@ class GitStacCommit(BaseStacCommit):
 
     @contextmanager
     def get_asset(self, href: str) -> Iterator[BinaryIO]:
-        file = os.path.abspath(href)
+        file = self._href_to_file(href)
 
-        if not _urlparse(href, scheme="").scheme == "":
-            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
-
-        if not file.startswith(self._repository._local_repository._dir):
-            raise HrefError(f"{href} is outside of repository {self._repository._local_repository._dir}")
-
-        try:
-            yield self._git_commit.smudge(file)
-        except GitError as error:
-            if GitError.is_file_not_found_error(error):
-                raise FileNotFoundError from error
-            else:
-                raise error
+        if self._repository._local_repository.is_lfs_installed:
+            pointer = self._git_commit.read(file)
+            yield io.BytesIO(self._git_commit.lfs_smudge(pointer))
+        else:
+            yield io.BytesIO(self._git_commit.read(file, text=False))
 
     def rollback(self):
         return NotImplementedError

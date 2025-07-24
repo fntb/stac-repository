@@ -378,9 +378,9 @@ class RemoteRepository():
 
             repository.push()
 
-    def clone(self, dir: Optional[str] = tempfile.mkdtemp()):
+    def clone(self, dir: str = tempfile.mkdtemp()):
         repository = Repository(dir)
-        repository.clone(self.dir, fetch_lfs_files=False)
+        repository.clone(dir, fetch_lfs_files=False)
 
         return repository
 
