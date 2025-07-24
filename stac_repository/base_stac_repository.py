@@ -12,6 +12,8 @@ from typing import (
 )
 
 import sys
+import os
+import shutil
 
 
 from abc import (
@@ -54,6 +56,7 @@ from .base_stac_transaction import (
     HrefError,
     CatalogError,
     UncatalogError,
+    ExtractError
 )
 
 from .stac import (
@@ -175,75 +178,6 @@ class BaseStacRepository(metaclass=ABCMeta):
         else:
             raise RefTypeError("Bad ref")
 
-    def _ingest_product(
-        self,
-        transaction: BaseStacTransaction,
-        processor: Processor,
-        product_source: str,
-        parent_id: Optional[str] = None,
-        ingest_assets: bool = False,
-        ingest_assets_out_of_scope: bool = False,
-        ingest_out_of_scope: bool = False,
-    ) -> Iterator[JobReport]:
-        """Ingests a product.
-
-        Raises:
-            ProcessingError: Processor raised an error
-            FileNotFoundError: Product source does not exist
-            StacObjectError: Product source is not a valid STAC object
-            HrefError:  Product source href (scheme) cannot be processed
-            UncatalogError:
-                - Old product version couldn't be deleted sucessfully
-                - Cannot uncatalog the root
-            CatalogError:
-        """
-        reporter = JobReportBuilder(product_source)
-
-        yield reporter.progress("Identifying & versionning")
-
-        try:
-            try:
-                product_id = processor.id(product_source)
-                product_version = processor.version(product_source)
-            except Exception as error:
-                raise ProcessingError(str(error)) from error
-
-            head = next(self.commits)
-            cataloged_stac_object = head.search(product_id)
-
-            if cataloged_stac_object is not None:
-                try:
-                    if product_version == _get_version(cataloged_stac_object):
-                        raise SkipIteration
-                except (_VersionNotFoundError, StacObjectError) as error:
-                    yield reporter.progress("Product found but unversionned, reprocessing")
-                else:
-                    yield reporter.progress("Previous version of the product found, reprocessing")
-            else:
-                yield reporter.progress("Product not found, processing")
-
-            try:
-                processed_stac_object_file = processor.process(product_source)
-            except Exception as error:
-                raise ProcessingError(str(error)) from error
-
-            yield reporter.progress("Cataloging")
-
-            transaction.catalog(
-                processed_stac_object_file,
-                parent_id=parent_id,
-                catalog_assets=ingest_assets,
-                catalog_assets_out_of_scope=ingest_assets_out_of_scope,
-                catalog_out_of_scope=ingest_out_of_scope
-            )
-
-            yield reporter.complete("Cataloged")
-        except SkipIteration:
-            yield reporter.complete("Product is already cataloged with matching version, skipping")
-        except Exception as error:
-            yield reporter.fail(error)
-            raise error
-
     def ingest(
         self,
         *sources: str,
@@ -295,42 +229,95 @@ class BaseStacRepository(metaclass=ABCMeta):
                 else:
                     yield reporter.complete(f"No products discovered")
 
-        with self.StacTransaction(self).context(
-            message=f"Ingest (processor={processor_id}:{processor.__version__}) : \n\n - " +
-            "\n - ".join(product_sources)
-        ) as transaction:
-            for product_source in product_sources:
-                try:
-                    yield from self._ingest_product(
-                        processor=processor,
-                        product_source=product_source,
-                        parent_id=parent_id,
-                        transaction=transaction,
-                        ingest_assets=ingest_assets,
-                        ingest_assets_out_of_scope=ingest_assets_out_of_scope,
-                        ingest_out_of_scope=ingest_out_of_scope,
-                    )
-                except Exception as error:
-                    errors[f"product={product_source}"] = error
+        for product_source in product_sources:
+            reporter = JobReportBuilder(product_source)
 
-            if errors:
-                raise errors
+            try:
+                with self.StacTransaction(self).context(
+                    message=f"Ingest {product_source} (processor={processor_id}:{processor.__version__})"
+                ) as transaction:
+
+                    yield reporter.progress("Identifying & versionning")
+
+                    try:
+                        try:
+                            product_id = processor.id(product_source)
+                            product_version = processor.version(product_source)
+                        except Exception as error:
+                            raise ProcessingError(str(error)) from error
+
+                        yield reporter.progress(f"Identified {product_id} (version={product_version})")
+
+                        head = next(self.commits)
+                        cataloged_stac_object = head.search(product_id)
+
+                        if cataloged_stac_object is not None:
+                            try:
+                                if product_version == _get_version(cataloged_stac_object):
+                                    raise SkipIteration
+                            except (_VersionNotFoundError, StacObjectError) as error:
+                                yield reporter.progress(f"{product_id} found but unversionned, reprocessing")
+                            else:
+                                yield reporter.progress(f"Previous version of {product_id} found, reprocessing")
+                        else:
+                            yield reporter.progress(f"{product_id} not found, processing")
+
+                        try:
+                            processed_stac_object_file = processor.process(product_source)
+                        except Exception as error:
+                            raise ProcessingError(str(error)) from error
+
+                        yield reporter.progress(f"Cataloging {product_id} (version={product_version})")
+
+                        transaction.catalog(
+                            processed_stac_object_file,
+                            parent_id=parent_id,
+                            catalog_assets=ingest_assets,
+                            catalog_assets_out_of_scope=ingest_assets_out_of_scope,
+                            catalog_out_of_scope=ingest_out_of_scope,
+                            version=product_version
+                        )
+
+                        yield reporter.complete(f"Cataloged {product_id} (version={product_version})")
+                    except SkipIteration:
+                        yield reporter.complete(f"{product_id} (version={product_version}) is already cataloged with matching version, skipping")
+                    except Exception as error:
+                        yield reporter.fail(error)
+                        raise error
+
+            except Exception as error:
+                errors[f"product={product_source}"] = error
+
+        if errors:
+            raise errors
 
     def prune(
         self,
         *product_ids: str,
+        extract: Optional[str] = None
     ) -> Iterator[JobReport]:
         """Removes some product(s) from the catalog.
 
         Raises:
             ErrorGroup:
             UncatalogError:
+            ExtractError:
         """
         errors = ErrorGroup()
 
-        transaction_message = "Prune : \n\n - " + "\n - ".join(product_ids)
-        with self.StacTransaction(self).context(message=transaction_message) as transaction:
-            for product_id in product_ids:
+        if extract is not None:
+            extract = os.path.abspath(extract)
+
+            try:
+                os.makedirs(extract, exist_ok=True)
+
+                if os.listdir(extract):
+                    raise FileExistsError(f"{extract} is not empty.")
+            except Exception as error:
+                raise ExtractError(f"Couldn't create the extraction directory. {str(error)}") from error
+
+        for product_id in product_ids:
+            with self.StacTransaction(self).context(message=f"Prune : {product_id}") as transaction:
                 reporter = JobReportBuilder(product_id)
 
                 yield reporter.progress("Pruning")
@@ -338,8 +325,13 @@ class BaseStacRepository(metaclass=ABCMeta):
                 try:
                     yield reporter.progress("Uncataloging")
 
+                    if extract is not None:
+                        product_extract_dir = os.path.join(extract, product_id)
+                    else:
+                        product_extract_dir = None
+
                     try:
-                        transaction.uncatalog(product_id)
+                        transaction.uncatalog(product_id, extract=product_extract_dir)
                     except FileNotFoundError:
                         yield reporter.complete("Not found in catalog")
                     else:
@@ -349,5 +341,8 @@ class BaseStacRepository(metaclass=ABCMeta):
 
                     errors[product_id] = error
 
-            if errors:
-                raise errors
+        if errors:
+            if extract is not None:
+                shutil.rmtree(extract, ignore_errors=True)
+
+            raise errors

@@ -328,7 +328,7 @@ def search(
                 io=io,
             )
         except (FileNotFoundError, StacObjectError, HrefError) as error:
-            logger.exception(f"[{type(error).__name__}] Ignored object {root_href} : {str(error)}")
+            logger.exception(f"[{type(error).__name__}] Ignored {root_href} : {str(error)}")
             return None
     else:
         stac_object = root_href
@@ -838,7 +838,7 @@ def get_version(
     elif isinstance(stac_object, (Collection, Catalog)) and stac_object.model_extra is not None:
         version = stac_object.model_extra.get("version")
     else:
-        version = None
+        raise TypeError(f"{type(stac_object).__name__} is not a stac object.")
 
     if version is None:
         raise VersionNotFoundError("Version not found")
@@ -846,3 +846,26 @@ def get_version(
         raise StacObjectError(f"Stac Object {stac_object.id} \"version\" property is not a string")
 
     return version
+
+
+def set_version(
+    stac_object: Union[Item, Collection, Catalog],
+    version: str
+) -> str:
+    """Sets the version of a STAC object.
+    """
+    if not isinstance(version, str):
+        raise TypeError(f"{version} is not a string")
+
+    if isinstance(stac_object, Item):
+        if stac_object.properties.model_extra is not None:
+            stac_object.properties.model_extra["version"] = version
+        else:
+            stac_object.properties.model_extra = {"version": version}
+    elif isinstance(stac_object, (Collection, Catalog)) and stac_object.model_extra is not None:
+        if stac_object.model_extra is not None:
+            stac_object.model_extra["version"] = version
+        else:
+            stac_object.model_extra = {"version": version}
+    else:
+        raise TypeError(f"{type(stac_object).__name__} is not a stac object.")

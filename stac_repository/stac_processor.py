@@ -96,8 +96,8 @@ class StacProcessor(Processor):
                 )
             )
         except VersionNotFoundError as error:
-            logger.info(f"No version found {product_source}, generating random")
-            return uuid.uuid4().hex
+            logger.info(f"No version found {product_source}, use id as version")
+            return StacProcessor.id(product_source)
 
     @staticmethod
     def process(product_source: str) -> str:

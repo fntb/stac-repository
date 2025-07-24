@@ -15,18 +15,22 @@ import contextlib
 import os
 import logging
 import posixpath
+import tempfile
+import shutil
 from urllib.parse import urlparse, urljoin
 
 from .stac import (
     StacIO,
     StacIOPerm,
     DefaultReadableStacIO,
+    DefaultStacIO,
     Item,
     Collection,
     Catalog,
     load,
     load_parent,
     set_parent,
+    set_version,
     unset_parent,
     save,
     delete,
@@ -35,6 +39,10 @@ from .stac import (
     StacObjectError,
     HrefError,
     JSONObjectError
+)
+
+from .base_stac_commit import (
+    ExtractError
 )
 
 if TYPE_CHECKING:
@@ -89,9 +97,11 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         self,
         product_file: str,
         parent_id: Optional[str] = None,
+        *,
         catalog_assets: bool = False,
         catalog_assets_out_of_scope: bool = False,
-        catalog_out_of_scope: bool = False
+        catalog_out_of_scope: bool = False,
+        version: str
     ):
         """Catalogs a product. If parent_id is unspecified then the product is cataloged as the new root.
 
@@ -143,6 +153,8 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
         )
 
         unset_parent(product)
+
+        set_version(product, version)
 
         if parent_id is None:
             if not isinstance(product, Catalog):
@@ -218,13 +230,18 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
     def uncatalog(
         self,
         product_id: str,
-    ):
-        """Uncatalogs a product.
+        extract: Optional[str] = None
+    ) -> Optional[str]:
+        """Uncatalogs a product. If an extraction directory is specified then the uncataloged product is 
+        saved into it.
 
         Raises:
             FileNotFoundError: Product couldn't be found in catalog
             UncatalogError: Product couldn't be deleted (in full, partial deletion may have occured)
+            ExtractError: 
         """
+
+        extract_file: Optional[str] = None
 
         product = search(
             "/catalog.json",
@@ -234,6 +251,46 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
 
         if product is None:
             raise FileNotFoundError(f"Product {product_id} not found in catalog")
+
+        if extract is not None:
+            extract = os.path.abspath(extract)
+
+            try:
+                os.makedirs(extract, exist_ok=True)
+
+                if os.listdir(extract):
+                    raise FileExistsError(f"{extract} is not empty.")
+            except Exception as error:
+                raise ExtractError(f"Couldn't create the extraction directory. {str(error)}") from error
+
+            try:
+                extracted_product = load(
+                    product.self_href,
+                    resolve_descendants=True,
+                    resolve_assets=True,
+                    io=self
+                )
+            except (StacObjectError, HrefError) as error:
+                raise ExtractError(str(error)) from error
+
+            unset_parent(extracted_product)
+
+            if isinstance(extracted_product, Catalog):
+                extract_file = os.path.join(extract, "catalog.json")
+            elif isinstance(extracted_product, Collection):
+                extract_file = os.path.join(extract, "collection.json")
+            else:
+                extract_file = os.path.join(extract, f"{extracted_product.id}.json")
+
+            extracted_product.self_href = posixpath.abspath(extract_file)
+
+            try:
+                save(extracted_product, io=DefaultStacIO(perms={
+                    posixpath.abspath(extract): StacIOPerm.W_ANY
+                }))
+            except HrefError as error:
+                shutil.rmtree(extract, ignore_errors=True)
+                raise ExtractError(f"Couldn't save the extracted product. {str(error)}") from error
 
         try:
             parent = load_parent(product, io=self)
@@ -282,6 +339,23 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
                     )
                 except HrefError as error:
                     raise UncatalogError(f"{product_id} couldn't be deleted sucessfully : {str(error)}") from error
+
+        return extract_file
+
+    def recatalog(
+        self,
+        product_id: str,
+        parent_id: Optional[str] = None,
+    ):
+        """Re-catalogs a product somewhere else. If parent_id is unspecified then the product is re-cataloged as the new root.
+
+        Raises:
+            TODO
+        """
+
+        with tempfile.TemporaryDirectory() as extract_dir:
+            extract_file = self.uncatalog(product_id, extract=extract_dir)
+            self.catalog(extract_file, parent_id=parent_id, catalog_assets=True)
 
     # def edit(
     #     self,

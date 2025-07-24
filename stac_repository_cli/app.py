@@ -255,7 +255,7 @@ def ingest(
         typer.Option(
             help="[Danger] Whever to ingest child products out of scope or not."
         )
-    ] = True,
+    ] = False,
     debug: bool = False
 ):
     """Ingests some products from various sources (eventually using an installed processor).
@@ -313,6 +313,12 @@ def ingest(
 @app.command()
 def prune(
     product_ids: List[str],
+    extract: Annotated[
+        Optional[str],
+        typer.Option(
+            help="If specified, must be the path to a directory in which pruned products will be extracted."
+        )
+    ] = None,
     debug: bool = False
 ):
     """Removes some products from the catalog.
@@ -322,7 +328,7 @@ def prune(
 
     try:
         print_reports(
-            stac_repository.prune(*product_ids),
+            stac_repository.prune(*product_ids, extract=extract),
             operation_name="Deletion"
         )
     except (

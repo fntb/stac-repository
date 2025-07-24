@@ -9,6 +9,8 @@ from typing import (
 
 import datetime
 import posixpath
+import shutil
+import os
 from abc import abstractmethod, ABCMeta
 
 from .stac import (
@@ -16,10 +18,15 @@ from .stac import (
     Collection,
     Catalog,
     ReadableStacIO,
+    DefaultStacIO,
+    StacIOPerm,
     search,
+    load,
+    unset_parent,
     StacObjectError,
     JSONObjectError,
-    HrefError
+    HrefError,
+    save
 )
 
 if TYPE_CHECKING:
@@ -28,6 +35,11 @@ if TYPE_CHECKING:
 
 class BackupValueError(ValueError):
     """Backend cannot process this type of backup destination."""
+    pass
+
+
+class ExtractError(Exception):
+    """Generic fatal extraction error"""
     pass
 
 
@@ -75,10 +87,62 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
         """
         return NotImplementedError
 
-    def export(self, export_dir: str):
-        """Exports the catalog as it was in this commit.
+    def extract(self, export_dir: str, product_id: Optional[str]):
+        """Extracts the catalog, or a product, as it was in this commit.
+
+        Raises:
+            FileNotFoundError:
+            FileExistsError:
+            StacObjectError:
+            HrefError:
         """
-        raise NotImplementedError
+        export_dir = os.path.abspath(export_dir)
+
+        try:
+            os.makedirs(export_dir, exist_ok=True)
+
+            if os.listdir(export_dir):
+                raise FileExistsError(f"{export_dir} is not empty.")
+        except Exception as error:
+            raise ExtractError(f"Couldn't create the extraction directory. {str(error)}") from error
+
+        product = search(
+            "/catalog.json",
+            product_id,
+            io=self,
+        )
+
+        if product is None:
+            raise FileNotFoundError(f"Product {product_id} not found in catalog")
+
+        try:
+            extracted_product = load(
+                product.self_href,
+                resolve_descendants=True,
+                resolve_assets=True,
+                io=self
+            )
+        except (StacObjectError, HrefError) as error:
+            raise ExtractError(str(error)) from error
+
+        unset_parent(extracted_product)
+
+        if isinstance(extracted_product, Catalog):
+            extract_file = os.path.join(export_dir, "catalog.json")
+        elif isinstance(extracted_product, Collection):
+            extract_file = os.path.join(export_dir, "collection.json")
+        else:
+            extract_file = os.path.join(export_dir, f"{extracted_product.id}.json")
+
+        extracted_product.self_href = posixpath.abspath(extract_file)
+
+        try:
+            save(extracted_product, io=DefaultStacIO(perms={
+                posixpath.abspath(export_dir): StacIOPerm.W_ANY
+            }))
+        except HrefError as error:
+            shutil.rmtree(export_dir, ignore_errors=True)
+            raise ExtractError(f"Couldn't save the extracted product. {str(error)}") from error
 
     def search(
         self,
@@ -88,6 +152,13 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
 
         This method will **not** lookup objects outside of the repository.
         """
+        try:
+            self.get("/catalog.json")
+        except FileNotFoundError:
+            return None
+        except Exception:
+            pass
+
         return search(
             "/catalog.json",
             id=id,

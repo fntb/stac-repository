@@ -30,6 +30,7 @@ from .utils import (
     get_extent,
     compute_extent,
     get_version,
+    set_version,
     search,
     export,
     StacObjectError,
