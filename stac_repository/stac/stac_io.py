@@ -104,16 +104,24 @@ class StacIO(ReadableStacIO):
 
 
 class StacIOPerm(Flag):
+    NONE = 0
+
     R_STAC = 1
     """Read STAC objects"""
+
+    R_ASSETS = 2
+    """Read STAC assets"""
 
     R_ANY = 1 | 2
     """Read STAC objects and assets"""
 
-    W_STAC = 1 | 4
+    RW_STAC = 1 | 4
     """Write (and read) STAC objects"""
 
-    W_ANY = 1 | 2 | 4 | 8
+    RW_ASSETS = 2 | 8
+    """Write (and read) STAC assets"""
+
+    RW_ANY = 1 | 2 | 4 | 8
     """Write (and read) STAC objects and assets"""
 
 
@@ -127,10 +135,10 @@ class DefaultReadableStacIO(ReadableStacIO):
 
     def check_perms(self, href: str, required_perm: StacIOPerm) -> bool:
         for (base_href, perm) in self._perms.items():
-            if required_perm in perm:
-                return href.startswith(base_href)
-        else:
-            return False
+            if required_perm in perm and href.startswith(base_href):
+                return True
+
+        return False
 
     @staticmethod
     def _is_file_href(href: str) -> bool:
@@ -167,7 +175,7 @@ class DefaultReadableStacIO(ReadableStacIO):
 
     @contextmanager
     def get_asset(self, href: str) -> Iterator[BinaryIO]:
-        if not self.check_perms(href, StacIOPerm.R_ANY):
+        if not self.check_perms(href, StacIOPerm.R_ASSETS):
             raise HrefError(f"{href} is not within readable assets scope")
 
         href_scheme = _urlparse(href, scheme="").scheme
@@ -189,7 +197,7 @@ class DefaultStacIO(DefaultReadableStacIO, StacIO):
     """A default implementation of `StacIO` operating on the local filesystem."""
 
     def set(self, href: str, value: Any):
-        if not self.check_perms(href, StacIOPerm.W_STAC):
+        if not self.check_perms(href, StacIOPerm.RW_STAC):
             raise HrefError(f"{href} is not within writeable scope")
 
         if _urlparse(href, scheme="").scheme != "":
@@ -206,7 +214,7 @@ class DefaultStacIO(DefaultReadableStacIO, StacIO):
                 raise JSONObjectError from error
 
     def set_asset(self, href: str, value: BinaryIO):
-        if not self.check_perms(href, StacIOPerm.W_ANY):
+        if not self.check_perms(href, StacIOPerm.RW_ASSETS):
             raise HrefError(f"{href} is not within writeable assets scope")
 
         if _urlparse(href, scheme="").scheme != "":
@@ -221,8 +229,8 @@ class DefaultStacIO(DefaultReadableStacIO, StacIO):
                 asset_stream.write(chunk)
 
     def unset(self, href: str):
-        if not self.check_perms(href, StacIOPerm.W_ANY):
-            raise HrefError(f"{href} is not within writeable assets scope")
+        if not self.check_perms(href, StacIOPerm.RW_ANY):
+            raise HrefError(f"{href} is not within writeable scope")
 
         if _urlparse(href, scheme="").scheme != "":
             raise HrefError(f"{href} cannot be unset, it is not a file")

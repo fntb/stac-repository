@@ -138,7 +138,7 @@ class BaseStacCommit(ReadableStacIO, metaclass=ABCMeta):
 
         try:
             save(extracted_product, io=DefaultStacIO(perms={
-                posixpath.abspath(export_dir): StacIOPerm.W_ANY
+                posixpath.abspath(export_dir): StacIOPerm.RW_ANY
             }))
         except HrefError as error:
             shutil.rmtree(export_dir, ignore_errors=True)

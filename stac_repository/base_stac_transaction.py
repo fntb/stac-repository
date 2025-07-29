@@ -121,29 +121,22 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
             product_base_url = product_url._replace(path=posixpath.dirname(product_url.path))
             product_base = product_base_url.geturl()
 
-        perms = {}
+        scope_perm = StacIOPerm.R_STAC | (
+            StacIOPerm.R_STAC if catalog_assets else StacIOPerm.NONE
+        )
 
-        if catalog_assets:
-            perms = {
-                **perms,
-                product_base: StacIOPerm.R_ANY
-            }
+        out_of_scope_perm = StacIOPerm.NONE | (
+            StacIOPerm.R_STAC if catalog_out_of_scope else StacIOPerm.NONE
+        ) | (
+            StacIOPerm.R_ASSETS if catalog_assets_out_of_scope else StacIOPerm.NONE
+        )
 
-        if catalog_out_of_scope:
-            perms = {
-                **perms,
-                "/": StacIOPerm.R_STAC,
-                "http://": StacIOPerm.R_STAC,
-                "https://": StacIOPerm.R_STAC,
-            }
-
-        if catalog_assets_out_of_scope:
-            perms = {
-                **perms,
-                "/": StacIOPerm.R_ANY,
-                "http://": StacIOPerm.R_ANY,
-                "https://": StacIOPerm.R_ANY,
-            }
+        perms = {
+            product_base: scope_perm,
+            "/": out_of_scope_perm,
+            "http://": out_of_scope_perm,
+            "https://": out_of_scope_perm,
+        }
 
         product = load(
             product_file,
@@ -286,7 +279,7 @@ class BaseStacTransaction(StacIO, metaclass=ABCMeta):
 
             try:
                 save(extracted_product, io=DefaultStacIO(perms={
-                    posixpath.abspath(extract): StacIOPerm.W_ANY
+                    posixpath.abspath(extract): StacIOPerm.RW_ANY
                 }))
             except HrefError as error:
                 shutil.rmtree(extract, ignore_errors=True)
